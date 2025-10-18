@@ -14,7 +14,7 @@ from pyrmute_registry.server.main import create_app
 def test_create_app(app_client: TestClient) -> None:
     """Test that app is created successfully."""
     assert app_client.app is not None
-    assert app_client.app.title == "Pyrmute Schema Registry"
+    assert app_client.app.title == "Pyrmute Schema Registry"  # type: ignore[attr-defined]
 
 
 def test_openapi_json_available(app_client: TestClient) -> None:
@@ -164,9 +164,9 @@ def test_general_exception_handler(
 def test_app_metadata(app_client: TestClient) -> None:
     """Test that app has correct metadata."""
     app = app_client.app
-    assert app.title == "Pyrmute Schema Registry"
-    assert app.version == "1.0.0"
-    assert "Centralized registry" in app.description
+    assert app.title == "Pyrmute Schema Registry"  # type: ignore[attr-defined]
+    assert app.version == "1.0.0"  # type: ignore[attr-defined]
+    assert "Centralized registry" in app.description  # type: ignore[attr-defined]
 
 
 def test_openapi_tags_configured(app_client: TestClient) -> None:
