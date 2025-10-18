@@ -58,6 +58,9 @@ jobs:
 
       - name: Run tests
         if: always()
+        env:
+          TERMINAL_WIDTH: 3000
+          _TYPER_FORCE_DISABLE_TERMINAL: 1
         run: uv run pytest --cov-report=xml --junitxml=junit.xml
 
       - name: Upload test results
