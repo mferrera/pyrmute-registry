@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  release:
+    types:
+      - created
+  schedule:
+    # Run nightly to check that tests are working with latest dependencies
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            uv sync --all-groups --upgrade
+          else
+            uv sync --all-groups --frozen
+          fi
+
+      - name: Ruff check
+        run: uv run ruff check
+
+      - name: Ruff format
+        if: always()
+        run: uv run ruff format --check
+
+      - name: Check typing with mypy
+        if: always()
+        run: uv run mypy src tests
+
+      - name: Run examples
+        if: always()
+        run: uv run pytest -m "not examples"
+
+      - name: Run tests
+        if: always()
+        run: uv run pytest --cov-report=xml --junitxml=junit.xml
+
+      - name: Upload test results
+        if: matrix.python-version == '3.12'
+        uses: codecov/test-results-action@v1
+        with:
+          files: junit.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        if: matrix.python-version == '3.12'
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}

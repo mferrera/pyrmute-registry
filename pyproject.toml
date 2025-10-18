@@ -1,0 +1,161 @@
+[build-system]
+requires = [
+    "setuptools",
+    "setuptools_scm[toml]",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrmute-registry"
+description = "Pyrmute Schema Registry"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Matt Ferrera", email = "mattferrera@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Topic :: Utilities",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Natural Language :: English",
+]
+keywords = ["pydantic", "versioning", "schema", "registry", "jsonschema"]
+dynamic = ["version"]
+dependencies = [
+    "httpx",
+    "pydantic",
+    "pyrmute",
+    "tenacity",
+]
+
+[dependency-groups]
+server = [
+    "alembic",
+    "fastapi",
+    "jsonschema",
+    "psycopg2-binary",
+    "pydantic-settings",
+    "rich",
+    "sqlalchemy",
+    "typer",
+    "uvicorn[standard]",
+]
+dev = [
+    "hypothesis",
+    "mypy",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-mock",
+    "pytest-xdist",
+    "ruff",
+    "types-jsonschema",
+]
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+    "griffe-typingdoc",
+]
+all = ["pyrmute-registry[server,dev,docs]"]
+
+[project.scripts]
+pyrmute-registry = "pyrmute_registry.server.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mferrera/pyrmute-registry"
+Repository = "https://github.com/mferrera/pyrmute-registry"
+Documentation = "https://github.com/mferrera/pyrmute-registry"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools_scm]
+write_to = "src/pyrmute_registry/_version.py"
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "_version.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.mypy]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+disallow_untyped_calls = true
+disallow_subclassing_any = true
+extra_checks = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+no_implicit_reexport = true
+strict_optional = true
+disallow_any_unimported = true
+no_implicit_optional = true
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "examples: integration tests that run example scripts",
+]
+
+[tool.ruff]
+line-length = 88
+exclude = ["_version.py"]
+
+[tool.ruff.lint]
+ignore = ["G004"]
+select = [
+    "B",  # flake-8-bugbear
+    "C",  # pylint-convention
+    "C90",  # mccabe
+    "D",  # pydocstyle
+    "E",  # pycodestyle-error
+    "F",  # pyflakes
+    "G",  # logging-format
+    "I",  # isort
+    "LOG",  # logging
+    "NPY",  # numpy
+    "PERF",  # perflint
+    "PIE",  # flake8-pie
+    "PL",  # pylint
+    "Q",  # flake8-quotes
+    "RET",  # flake8-return
+    "RSE",  # flake8-raise
+    "RUF",  # ruff rules
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "TID",  # flake8-tidy-imports
+    "UP",  # pyupgrade
+    "W",  # pylint-warnings
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
