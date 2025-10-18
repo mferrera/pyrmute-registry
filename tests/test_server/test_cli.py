@@ -4,11 +4,19 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
+from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
 from pyrmute_registry.server.cli import app, main
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def set_column_width(monkeypatch: MonkeyPatch) -> None:
+    """Sets a higher column width to prevent tests from failing."""
+    monkeypatch.setenv("TERMINAL_WIDTH", "3000")
 
 
 def test_serve_command_default_settings() -> None:
