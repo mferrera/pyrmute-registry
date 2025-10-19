@@ -15,7 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import get_settings
 from .db import init_db
-from .routers import health, root, schemas
+from .routers import api_keys, health, root, schemas
 from .schemas.errors import (
     DatabaseErrorResponse,
     InternalErrorResponse,
@@ -109,6 +109,10 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         openapi_tags=[
             {
+                "name": "api_keys",
+                "description": "API key registration and management operations",
+            },
+            {
                 "name": "schemas",
                 "description": "Schema registration and management operations",
             },
@@ -184,10 +188,10 @@ def create_app() -> FastAPI:
             content=error_response.model_dump(),
         )
 
-    # Include routers
     app.include_router(root.router)
     app.include_router(health.router)
     app.include_router(schemas.router)
+    app.include_router(api_keys.router)
 
     return app
 

@@ -24,6 +24,6 @@ def get_schema_service(
     return SchemaService(db)
 
 
-DatabaseDep = Annotated[Session, Depends(get_db)]
+DbDep = Annotated[Session, Depends(get_db)]
 SchemaServiceDep = Annotated[SchemaService, Depends(get_schema_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]

@@ -1,21 +1,23 @@
 """Test configuration and fixtures."""
 
 from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, scoped_session, sessionmaker
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from pyrmute_registry.server.auth import hash_api_key
 from pyrmute_registry.server.config import Settings, get_settings
 from pyrmute_registry.server.db import Base, get_db
 from pyrmute_registry.server.main import create_app
+from pyrmute_registry.server.models.api_key import ApiKey, Permission
 
 # Test database URL
 TEST_DATABASE_URL = "sqlite:///:memory:"
-TEST_API_KEY = "test-secret-key-12345"
 
 
 def get_test_settings() -> Settings:
@@ -33,22 +35,9 @@ def get_auth_settings() -> Settings:
     return Settings(
         database_url=TEST_DATABASE_URL,
         enable_auth=True,
-        api_key=TEST_API_KEY,
         environment="test",
         cors_origins=["*"],
     )
-
-
-# Create test engine with in-memory SQLite
-test_engine = create_engine(
-    TEST_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,  # Use StaticPool for in-memory database
-)
-
-TestSessionLocal = scoped_session(
-    sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-)
 
 
 @pytest.fixture(autouse=True)
@@ -60,17 +49,31 @@ def reset_settings_cache() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="function")
-def db_session() -> Generator[Session, None, None]:
+def db_engine() -> Generator[Engine, None, None]:
+    """Create a new database engine for each test."""
+    engine = create_engine(
+        TEST_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    yield engine
+    Base.metadata.drop_all(bind=engine)
+    engine.dispose()
+
+
+@pytest.fixture(scope="function")
+def db_session(db_engine: Engine) -> Generator[Session, None, None]:
     """Create test database session for each test.
 
-    This fixture creates a fresh database with all tables for each test, then tears it
+    This fixture creates a fresh database session for each test, then tears it
     down after the test completes.
 
     Yields:
         Database session with clean state
     """
-    Base.metadata.create_all(bind=test_engine)
-    session = TestSessionLocal()
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
+    session = SessionLocal()
     try:
         yield session
         session.commit()
@@ -79,55 +82,38 @@ def db_session() -> Generator[Session, None, None]:
         raise
     finally:
         session.close()
-        TestSessionLocal.remove()
-        Base.metadata.drop_all(bind=test_engine)
-
-
-def override_get_db() -> Generator[Session, None, None]:
-    """Override database dependency for testing.
-
-    This is used by the FastAPI dependency injection system
-    to provide a test database session.
-    """
-    session = TestSessionLocal()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-        TestSessionLocal.remove()
 
 
 @pytest.fixture
-def app_client() -> Generator[TestClient, None, None]:
+def app_client(db_session: Session) -> Generator[TestClient, None, None]:
     """Create test client with overridden dependencies.
 
     This fixture provides a FastAPI TestClient configured for testing with
     authentication disabled and using an in-memory database.
 
     Yields:
-        FastAPI test client
+        FastAPI test client.
     """
     app = create_app()
 
+    def override_get_db() -> Generator[Session, None, None]:
+        try:
+            yield db_session
+        finally:
+            pass
+
     app.dependency_overrides[get_settings] = get_test_settings
     app.dependency_overrides[get_db] = override_get_db
-
-    Base.metadata.create_all(bind=test_engine)
 
     try:
         with TestClient(app) as client:
             yield client
     finally:
-        Base.metadata.drop_all(bind=test_engine)
         app.dependency_overrides.clear()
 
 
 @pytest.fixture
-def production_client() -> Generator[TestClient, None, None]:
+def production_client(db_session: Session) -> Generator[TestClient, None, None]:
     """Create test client with production settings."""
 
     def get_prod_settings() -> Settings:
@@ -136,45 +122,47 @@ def production_client() -> Generator[TestClient, None, None]:
             environment="production",
         )
 
+    def override_get_db() -> Generator[Session, None, None]:
+        try:
+            yield db_session
+        finally:
+            pass
+
     app = create_app()
     app.dependency_overrides[get_settings] = get_prod_settings
     app.dependency_overrides[get_db] = override_get_db
 
-    Base.metadata.create_all(bind=test_engine)
-
     try:
         with TestClient(app) as client:
             yield client
     finally:
-        Base.metadata.drop_all(bind=test_engine)
         app.dependency_overrides.clear()
 
 
 @pytest.fixture
-def auth_enabled_client() -> Generator[TestClient]:
+def auth_enabled_client(db_session: Session) -> Generator[TestClient, None, None]:
     """Create test client with authentication enabled."""
     app = create_app()
 
+    def override_get_db() -> Generator[Session, None, None]:
+        try:
+            yield db_session
+        finally:
+            pass
+
     app.dependency_overrides[get_settings] = get_auth_settings
     app.dependency_overrides[get_db] = override_get_db
-
-    Base.metadata.create_all(bind=test_engine)
 
     try:
         with TestClient(app) as client:
             yield client
     finally:
-        Base.metadata.drop_all(bind=test_engine)
         app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def sample_schema() -> dict[str, Any]:
-    """Sample JSON schema for testing.
-
-    Returns:
-        A valid JSON Schema with basic user properties.
-    """
+    """Sample JSON schema for testing."""
     return {
         "type": "object",
         "properties": {
@@ -188,21 +176,164 @@ def sample_schema() -> dict[str, Any]:
 
 @pytest.fixture
 def sample_schema_v2() -> dict[str, Any]:
-    """Sample JSON schema version 2 for testing.
-
-    This version adds a new field and makes email required, useful for testing schema
-    evolution and comparison.
-
-    Returns:
-        A valid JSON Schema v2 with additional properties.
-    """
+    """Sample JSON schema version 2 for testing."""
     return {
         "type": "object",
         "properties": {
             "id": {"type": "string"},
             "name": {"type": "string"},
             "email": {"type": "string", "format": "email"},
-            "age": {"type": "integer"},  # New field
+            "age": {"type": "integer"},
         },
-        "required": ["id", "name", "email"],  # Email now required
+        "required": ["id", "name", "email"],
     }
+
+
+@pytest.fixture
+def auth_enabled_settings() -> Settings:
+    """Settings with authentication enabled."""
+    return Settings(
+        database_url="sqlite:///:memory:",
+        enable_auth=True,
+        environment="test",
+    )
+
+
+@pytest.fixture
+def auth_disabled_settings() -> Settings:
+    """Settings with authentication disabled."""
+    return Settings(
+        database_url="sqlite:///:memory:",
+        enable_auth=False,
+        environment="test",
+    )
+
+
+@pytest.fixture
+def sample_api_key(db_session: Session) -> ApiKey:
+    """Create a sample API key for testing."""
+    plaintext = "test-key-secret-12345"
+    key = ApiKey(
+        name="test-key",
+        key_hash=hash_api_key(plaintext),
+        permission=Permission.WRITE.value,
+        created_by="test",
+        description="Test API key",
+    )
+    db_session.add(key)
+    db_session.commit()
+    db_session.refresh(key)
+    key._plaintext = plaintext  # type: ignore[attr-defined]
+    return key
+
+
+@pytest.fixture
+def admin_api_key(db_session: Session) -> ApiKey:
+    """Create an admin API key for testing."""
+    plaintext = "admin-key-secret-67890"
+    key = ApiKey(
+        name="test-admin-key",
+        key_hash=hash_api_key(plaintext),
+        permission=Permission.ADMIN.value,
+        created_by="test",
+        description="Admin API key",
+    )
+    db_session.add(key)
+    db_session.commit()
+    db_session.refresh(key)
+    key._plaintext = plaintext  # type: ignore[attr-defined]
+    return key
+
+
+@pytest.fixture
+def read_only_key(db_session: Session) -> ApiKey:
+    """Create a read-only API key for testing."""
+    plaintext = "readonly-key-secret-11111"
+    key = ApiKey(
+        name="readonly-key",
+        key_hash=hash_api_key(plaintext),
+        permission=Permission.READ.value,
+        created_by="test",
+        description="Read-only API key",
+    )
+    db_session.add(key)
+    db_session.commit()
+    db_session.refresh(key)
+    key._plaintext = plaintext  # type: ignore[attr-defined]
+    return key
+
+
+@pytest.fixture
+def delete_permission_key(db_session: Session) -> ApiKey:
+    """Create an API key with delete permission for testing."""
+    plaintext = "delete-key-secret-44444"
+    key = ApiKey(
+        name="delete-key",
+        key_hash=hash_api_key(plaintext),
+        permission=Permission.DELETE.value,
+        created_by="test",
+        description="Delete permission API key",
+    )
+    db_session.add(key)
+    db_session.commit()
+    db_session.refresh(key)
+    key._plaintext = plaintext  # type: ignore[attr-defined]
+    return key
+
+
+@pytest.fixture
+def revoked_key(db_session: Session) -> ApiKey:
+    """Create a revoked API key for testing."""
+    plaintext = "revoked-key-secret-22222"
+    key = ApiKey(
+        name="revoked-key",
+        key_hash=hash_api_key(plaintext),
+        permission=Permission.WRITE.value,
+        created_by="test",
+        description="Revoked API key",
+        revoked=True,
+        revoked_at=datetime.now(UTC),
+        revoked_by="test",
+    )
+    db_session.add(key)
+    db_session.commit()
+    db_session.refresh(key)
+    key._plaintext = plaintext  # type: ignore[attr-defined]
+    return key
+
+
+@pytest.fixture
+def expired_key(db_session: Session) -> ApiKey:
+    """Create an expired API key for testing."""
+    plaintext = "expired-key-secret-33333"
+    key = ApiKey(
+        name="expired-key",
+        key_hash=hash_api_key(plaintext),
+        permission=Permission.WRITE.value,
+        created_by="test",
+        description="Expired API key",
+        expires_at=datetime.now(UTC) - timedelta(days=1),
+    )
+    db_session.add(key)
+    db_session.commit()
+    db_session.refresh(key)
+    key._plaintext = plaintext  # type: ignore[attr-defined]
+    return key
+
+
+@pytest.fixture
+def admin_key_header(db_session: Session, admin_api_key: ApiKey) -> dict[str, str]:
+    """Create authentication header with admin API key."""
+    return {"X-API-Key": admin_api_key._plaintext}  # type: ignore[attr-defined]
+
+
+@pytest.fixture
+def write_key_header(db_session: Session, sample_api_key: ApiKey) -> dict[str, str]:
+    """Create authentication header with write API key."""
+    return {"X-API-Key": sample_api_key._plaintext}  # type: ignore[attr-defined]
+
+
+@pytest.fixture
+def read_key_header(db_session: Session, read_only_key: ApiKey) -> dict[str, str]:
+    """Create authentication header with read-only API key."""
+    return {"X-API-Key": read_only_key._plaintext}  # type: ignore[attr-defined]

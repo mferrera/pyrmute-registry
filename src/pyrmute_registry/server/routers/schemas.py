@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, Path, Query, status
 
-from pyrmute_registry.server.auth import AuthRequired
+from pyrmute_registry.server.auth import AuthDelete, AuthRead, AuthWrite
 from pyrmute_registry.server.deps import SchemaServiceDep
 from pyrmute_registry.server.schemas.schema import (
     ComparisonResponse,
@@ -34,7 +34,7 @@ def register_namespaced_schema(
     model_name: Annotated[str, Path(description="Model name")],
     schema_data: Annotated[SchemaCreate, Body(description="Schema data")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
     allow_overwrite: Annotated[
         bool, Query(description="Allow overwriting existing schema")
     ] = False,
@@ -53,7 +53,7 @@ def get_latest_namespaced_schema(
     namespace: Annotated[str, Path(description="Namespace")],
     model_name: Annotated[str, Path(description="Model name")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
 ) -> SchemaResponse:
     """Get the latest version of a namespaced schema."""
     return service.get_latest_schema(namespace, model_name)
@@ -70,7 +70,7 @@ def get_namespaced_schema(
     model_name: Annotated[str, Path(description="Model name")],
     version: Annotated[str, Path(description="Version string (e.g., '1.0.0')")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
 ) -> SchemaResponse:
     """Get a specific namespaced schema version."""
     return service.get_schema(namespace, model_name, version)
@@ -86,7 +86,7 @@ def list_namespaced_versions(
     namespace: Annotated[str, Path(description="Namespace")],
     model_name: Annotated[str, Path(description="Model name")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
 ) -> dict[str, list[str]]:
     """List all versions for a namespaced model."""
     return service.list_versions(namespace, model_name)
@@ -102,7 +102,7 @@ def compare_namespaced_versions(
     namespace: Annotated[str, Path(description="Namespace")],
     model_name: Annotated[str, Path(description="Model name")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
     from_version: Annotated[str, Query(..., description="Source version")],
     to_version: Annotated[str, Query(..., description="Target version")],
 ) -> ComparisonResponse:
@@ -121,7 +121,7 @@ def delete_namespaced_schema(
     model_name: Annotated[str, Path(description="Model name")],
     version: Annotated[str, Path(description="Version string")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthDelete,
     force: Annotated[
         bool, Query(description="Force deletion without safety check")
     ] = False,
@@ -147,7 +147,7 @@ def deprecate_namespaced_schema(
     model_name: Annotated[str, Path(description="Model name")],
     version: Annotated[str, Path(description="Version string")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthWrite,
     message: Annotated[str | None, Query(description="Deprecation message")] = None,
 ) -> SchemaResponse:
     """Mark a namespaced schema version as deprecated."""
@@ -170,7 +170,7 @@ def register_global_schema(
     model_name: Annotated[str, Path(description="Model name")],
     schema_data: Annotated[SchemaCreate, Body(description="Schema data")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthWrite,
     namespace: Annotated[
         str | None,
         Query(description="Optional namespace for scoping (overrides global behavior)"),
@@ -195,7 +195,7 @@ def register_global_schema(
 def get_latest_global_schema(
     model_name: Annotated[str, Path(description="Model name")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
     namespace: Annotated[
         str | None, Query(description="Optional namespace for scoping")
     ] = None,
@@ -217,7 +217,7 @@ def get_global_schema(
     model_name: Annotated[str, Path(description="Model name")],
     version: Annotated[str, Path(description="Version string (e.g., '1.0.0')")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
     namespace: Annotated[
         str | None, Query(description="Optional namespace for scoping")
     ] = None,
@@ -238,7 +238,7 @@ def get_global_schema(
 def list_global_versions(
     model_name: Annotated[str, Path(description="Model name")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
     namespace: Annotated[
         str | None, Query(description="Optional namespace for scoping")
     ] = None,
@@ -259,7 +259,7 @@ def list_global_versions(
 def compare_global_versions(
     model_name: Annotated[str, Path(description="Model name")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
     from_version: Annotated[str, Query(..., description="Source version")],
     to_version: Annotated[str, Query(..., description="Target version")],
     namespace: Annotated[
@@ -283,7 +283,7 @@ def delete_global_schema(
     model_name: Annotated[str, Path(description="Model name")],
     version: Annotated[str, Path(description="Version string")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthDelete,
     namespace: Annotated[
         str | None, Query(description="Optional namespace for scoping")
     ] = None,
@@ -314,7 +314,7 @@ def deprecate_global_schema(
     model_name: Annotated[str, Path(description="Model name")],
     version: Annotated[str, Path(description="Version string")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthWrite,
     namespace: Annotated[
         str | None, Query(description="Optional namespace for scoping")
     ] = None,
@@ -336,7 +336,7 @@ def deprecate_global_schema(
 def list_namespaces_for_model(
     model_name: Annotated[str, Path(description="Model name to search for")],
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
 ) -> dict[str, dict[str, list[str]]]:
     """List all namespaces that contain versions of the specified model.
 
@@ -368,7 +368,7 @@ def list_namespaces_for_model(
 )
 def list_schemas(  # noqa: PLR0913
     service: SchemaServiceDep,
-    _authenticated: AuthRequired,
+    _auth: AuthRead,
     namespace: Annotated[
         str | None,
         Query(

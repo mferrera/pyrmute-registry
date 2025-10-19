@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,14 +12,44 @@ class Settings(BaseSettings):
 
     Settings can be configured via:
 
-    - Environment variables (e.g., PYRMUTE_REGISTRY_API_KEY)
+    - Environment variables (e.g., PYRMUTE_REGISTRY_ENABLE_AUTH)
     - .env file in the project root
     - Direct instantiation for testing
 
+    Authentication:
+        The registry uses database-backed API keys for authentication.
+
+        - Multiple keys with different permission levels (read/write/delete/admin)
+        - Secure hashed storage (bcrypt)
+        - Per-key usage tracking and audit trails
+        - Managed via `/api-keys` endpoints or CLI
+
+        To get started:
+        ```sh
+        # Enable authentication
+        export PYRMUTE_REGISTRY_ENABLE_AUTH=true
+
+        # Create your first admin key
+        pyrmute-registry create-admin-key --name admin
+
+        # Use the returned key in API requests
+        curl -H "X-API-Key: <your-key>" http://localhost:8000/schemas
+        ```
+
     Examples:
         ```python
+        # Default (auth disabled)
         settings = Settings()
-        settings = Settings(enable_auth=True, api_key="secret")
+
+        # Enable authentication
+        settings = Settings(enable_auth=True)
+
+        # Production configuration
+        settings = Settings(
+            enable_auth=True,
+            environment="production",
+            database_url="postgresql://user:pass@db:5432/registry"
+        )
         ```
     """
 
@@ -44,13 +74,13 @@ class Settings(BaseSettings):
     )
 
     # Authentication
-    api_key: str | None = Field(
-        default=None,
-        description="API key for authentication (required if enable_auth is True)",
-    )
     enable_auth: bool = Field(
         default=False,
-        description="Enable API key authentication",
+        description=(
+            "Enable API key authentication. "
+            "When enabled, all endpoints except /health require authentication. "
+            "Use 'pyrmute-registry create-admin-key' to create your first API key."
+        ),
     )
 
     # CORS
@@ -142,41 +172,6 @@ class Settings(BaseSettings):
         """
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]
-        return v
-
-    @field_validator("api_key")
-    @classmethod
-    def validate_api_key(cls, v: str | None, info: ValidationInfo) -> str | None:
-        """Validate that api_key is set when auth is enabled.
-
-        Args:
-            v: API key value.
-            info: Validation info context.
-
-        Returns:
-            Validated API key.
-
-        Raises:
-            ValueError: If auth is enabled but api_key is not set.
-        """
-        # Note: enable_auth might not be in info.data yet during validation
-        # This will be checked at runtime in the auth dependency
-        if v is not None and len(v) < 8:  # noqa: PLR2004
-            raise ValueError("API key must be at least 8 characters long")
-        return v
-
-    @field_validator("environment")
-    @classmethod
-    def set_debug_for_dev(cls, v: str, info: ValidationInfo) -> str:
-        """Set debug mode automatically for development environment.
-
-        Args:
-            v: Environment value.
-            info: Validation info context.
-
-        Returns:
-            Environment value.
-        """
         return v
 
     @property

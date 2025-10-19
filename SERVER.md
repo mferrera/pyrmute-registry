@@ -8,10 +8,11 @@ Pydantic model schemas across your microservices architecture.
 
 - **RESTful API** - Clean, well-documented REST endpoints
 - **Multi-Tenant Support** - Namespace-based schema isolation
-- **Authentication** - API key-based security
+- **Database-Backed Authentication** - Secure API key management with granular permissions
 - **PostgreSQL/SQLite** - Database support
 - **Health Checks** - Kubernetes/Docker-ready health endpoints
 - **Deprecation Tracking** - Mark schemas as deprecated with messages
+- **Audit Trail** - Track API key usage and schema changes
 
 ## Installation
 
@@ -31,7 +32,8 @@ pyrmute-registry serve
 
 ### Using Docker Compose
 
-See the [`docker-compose.yml`](docker-compose.yml) configuration included in the repository.
+See the [`docker-compose.yml`](docker-compose.yml) configuration included in
+the repository.
 
 Start the server:
 
@@ -65,12 +67,17 @@ PYRMUTE_REGISTRY_DATABASE_ECHO=true
 
 ### Authentication
 
-```sh
-# Enable authentication
-PYRMUTE_REGISTRY_ENABLE_AUTH=true
+The registry uses **database-backed API keys** for authentication with
+granular permission levels:
 
-# Set API key (required if auth enabled)
-PYRMUTE_REGISTRY_API_KEY="your-secret-key-minimum-8-chars"
+- **READ** - View schemas only
+- **WRITE** - Read and create/update schemas
+- **DELETE** - Read, write, and delete schemas
+- **ADMIN** - Full access including API key management
+
+```sh
+# Enable authentication (disabled by default for development)
+PYRMUTE_REGISTRY_ENABLE_AUTH=true
 ```
 
 ### CORS Configuration
@@ -125,9 +132,8 @@ PYRMUTE_REGISTRY_RATE_LIMIT_PER_MINUTE=60
 
 ```sh
 # .env file for production
-DATABASE_URL="postgresql://registry:secure_password@db.example.com:5432/registry"
+PYRMUTE_REGISTRY_DATABASE_URL="postgresql://registry:secure_password@db.example.com:5432/registry"
 PYRMUTE_REGISTRY_ENABLE_AUTH=true
-PYRMUTE_REGISTRY_API_KEY="your-very-secret-key-at-least-32-chars"
 PYRMUTE_REGISTRY_ENVIRONMENT="production"
 PYRMUTE_REGISTRY_CORS_ORIGINS="https://app.example.com"
 PYRMUTE_REGISTRY_HOST="0.0.0.0"
@@ -139,30 +145,160 @@ PYRMUTE_REGISTRY_LOG_LEVEL="INFO"
 ## Authentication
 
 When authentication is enabled, all endpoints except `/health/*` and `/`
-require authentication.
+require valid API keys with appropriate permissions.
 
-### Using API Keys
+### Setting Up Authentication
+
+#### 1. Enable Authentication
+
+```sh
+export PYRMUTE_REGISTRY_ENABLE_AUTH=true
+pyrmute-registry serve
+```
+
+#### 2. Create Your First Admin Key
+
+Use the CLI to create an admin key:
+
+```sh
+pyrmute-registry create-admin-key --name "admin" --description "Initial admin key"
+```
+
+**IMPORTANT:** Save the generated API key securely - it will only be shown
+once!
+
+Example output:
+```
+✓ Admin API key created successfully!
+
+Name: admin
+Permission: admin
+API Key: v7x9K8mN3pL2qR5tY8wZ1aB4cD6eF0gH9iJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9
+
+⚠️  SAVE THIS KEY NOW - It will never be shown again!
+```
+
+#### 3. Use API Keys in Requests
 
 Include the API key in requests using either method:
 
-**X-API-Key Header:**
+**X-API-Key Header (Recommended):**
 ```sh
-curl -H "X-API-Key: your-secret-key" \
+curl -H "X-API-Key: v7x9K8mN3pL..." \
   http://localhost:8000/schemas
 ```
 
 **Authorization Bearer Token:**
 ```sh
-curl -H "Authorization: Bearer your-secret-key" \
+curl -H "Authorization: Bearer v7x9K8mN3pL..." \
   http://localhost:8000/schemas
 ```
+
+### Managing API Keys
+
+#### Create Additional Keys
+
+Use the admin key to create more keys via the API:
+
+```sh
+# Create a read-only key
+curl -X POST http://localhost:8000/api-keys \
+  -H "X-API-Key: <your-admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "monitoring-service",
+    "permission": "read",
+    "description": "Read-only key for monitoring dashboards",
+    "expires_in_days": 365
+  }'
+
+# Create a write key for CI/CD
+curl -X POST http://localhost:8000/api-keys \
+  -H "X-API-Key: <your-admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "ci-cd-pipeline",
+    "permission": "write",
+    "description": "CI/CD deployment key"
+  }'
+
+# Create a delete key
+curl -X POST http://localhost:8000/api-keys \
+  -H "X-API-Key: <your-admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "cleanup-service",
+    "permission": "delete",
+    "description": "Automated cleanup service"
+  }'
+```
+
+#### List All Keys
+
+```sh
+curl http://localhost:8000/api-keys \
+  -H "X-API-Key: <your-admin-key>"
+```
+
+#### View Key Details
+
+```sh
+curl http://localhost:8000/api-keys/1 \
+  -H "X-API-Key: <your-admin-key>"
+```
+
+#### Revoke a Key
+
+```sh
+curl -X POST http://localhost:8000/api-keys/1/revoke \
+  -H "X-API-Key: <your-admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "revoked_by": "admin",
+    "reason": "Key compromised"
+  }'
+```
+
+#### Delete a Key (Permanent)
+
+```sh
+curl -X DELETE http://localhost:8000/api-keys/1 \
+  -H "X-API-Key: <your-admin-key>"
+```
+
+**Warning:** Deletion is permanent and removes all audit trail. Consider
+revoking instead.
+
+#### View Key Statistics
+
+```sh
+curl http://localhost:8000/api-keys/stats \
+  -H "X-API-Key: <your-admin-key>"
+```
+
+### Permission Levels
+
+| Permission | Read Schemas | Create/Update | Deprecate | Delete Schemas | Manage API Keys |
+|------------|--------------|---------------|-----------|----------------|-----------------|
+| READ       | ✅           | ❌            | ❌        | ❌             | ❌              |
+| WRITE      | ✅           | ✅            | ✅        | ❌             | ❌              |
+| DELETE     | ✅           | ✅            | ✅        | ✅             | ❌              |
+| ADMIN      | ✅           | ✅            | ✅        | ✅             | ✅              |
+
+### Security Features
+
+- **Bcrypt Hashing** - API keys are hashed using bcrypt before storage
+- **Usage Tracking** - Track when keys were last used and how many times
+- **Expiration** - Set automatic expiration dates for keys
+- **Revocation** - Instantly disable compromised keys
+- **Audit Trail** - Track who created, revoked, or deleted each key
 
 ### Example with curl
 
 ```sh
-# Register a schema
+# Register a schema (requires WRITE permission)
 curl -X POST "http://localhost:8000/schemas/user-service/User/versions" \
-  -H "X-API-Key: your-secret-key" \
+  -H "X-API-Key: <your-write-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "version": "1.0.0",
@@ -175,9 +311,14 @@ curl -X POST "http://localhost:8000/schemas/user-service/User/versions" \
     "registered_by": "user-service"
   }'
 
-# Get a schema
-curl -H "X-API-Key: your-secret-key" \
+# Get a schema (requires READ permission)
+curl -H "X-API-Key: <your-read-key>" \
   "http://localhost:8000/schemas/user-service/User/versions/1.0.0"
+
+# Delete a schema (requires DELETE permission)
+curl -X DELETE \
+  "http://localhost:8000/schemas/user-service/User/versions/1.0.0?force=true" \
+  -H "X-API-Key: <your-delete-key>"
 ```
 
 ## Database Setup
@@ -206,7 +347,9 @@ GRANT ALL PRIVILEGES ON DATABASE registry TO registry_user;
 PYRMUTE_REGISTRY_DATABASE_URL="postgresql://registry_user:secure_password@localhost:5432/registry"
 ```
 
-3. Tables are created automatically on first startup.
+3. Tables are created automatically on first startup, including:
+   - `schemas` - Schema versions
+   - `api_keys` - API key credentials and metadata
 
 ### Database Migrations
 
@@ -224,17 +367,57 @@ init_db()
 ### Production Checklist
 
 - [ ] Use PostgreSQL instead of SQLite
-- [ ] Enable authentication with strong API key
+- [ ] Enable authentication (`PYRMUTE_REGISTRY_ENABLE_AUTH=true`)
+- [ ] Create admin API key via CLI
+- [ ] Generate unique API keys for each service/user
+- [ ] Set appropriate permission levels for each key
 - [ ] Set `PYRMUTE_REGISTRY_ENVIRONMENT=production`
 - [ ] Configure appropriate CORS origins
 - [ ] Use HTTPS/TLS termination (nginx, load balancer, etc.)
-- [ ] Set up database backups
+- [ ] Set up database backups (includes API keys table)
 - [ ] Configure logging and monitoring
 - [ ] Use multiple workers (`PYRMUTE_REGISTRY_WORKERS=4`)
 - [ ] Set resource limits (memory, CPU)
 - [ ] Enable rate limiting if needed
+- [ ] Rotate API keys periodically
+- [ ] Monitor API key usage via audit logs
 
 ### Docker Deployment
+
+**Development (Auth Disabled):**
+
+```sh
+docker-compose up -d
+
+# No authentication required
+curl http://localhost:8000/schemas
+```
+
+**Production (Auth Enabled):**
+
+```sh
+# 1. Start with auth enabled
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# 2. Create admin API key
+docker-compose exec registry pyrmute-registry create-admin-key --name admin
+
+# 3. Save the returned key securely
+# Example: v7x9K8mN3pL2qR5tY8wZ1aB4cD6eF0gH9iJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9
+
+# 4. Use the key in requests
+curl -H "X-API-Key: v7x9K8mN3pL..." http://localhost:8000/schemas
+
+# 5. Create additional keys as needed
+curl -X POST http://localhost:8000/api-keys \
+  -H "X-API-Key: v7x9K8mN3pL..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "service-key",
+    "permission": "write",
+    "description": "Service deployment key"
+  }'
+```
 
 **Dockerfile:**
 
@@ -266,8 +449,11 @@ docker build -t pyrmute-registry-server .
 docker run -d \
   -p 8000:8000 \
   -e PYRMUTE_REGISTRY_DATABASE_URL="postgresql://..." \
-  -e PYRMUTE_REGISTRY_API_KEY="..." \
+  -e PYRMUTE_REGISTRY_ENABLE_AUTH="true" \
   pyrmute-registry-server
+
+# Create admin key after container starts
+docker exec <container-id> pyrmute-registry create-admin-key --name admin
 ```
 
 ### Kubernetes Deployment
@@ -300,11 +486,8 @@ spec:
             secretKeyRef:
               name: registry-secrets
               key: database-url
-        - name: PYRMUTE_REGISTRY_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: registry-secrets
-              key: api-key
+        - name: PYRMUTE_REGISTRY_ENABLE_AUTH
+          value: "true"
         - name: PYRMUTE_REGISTRY_ENVIRONMENT
           value: "production"
         - name: PYRMUTE_REGISTRY_WORKERS
@@ -350,8 +533,37 @@ metadata:
 type: Opaque
 stringData:
   database-url: "postgresql://user:pass@postgres:5432/registry"
-  api-key: "your-very-secret-api-key-here"
+
+---
+# Job to create initial admin key
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: registry-init-admin-key
+spec:
+  template:
+    spec:
+      containers:
+      - name: init-admin
+        image: pyrmute-registry-server:latest
+        command:
+        - pyrmute-registry
+        - create-admin-key
+        - --name
+        - kubernetes-admin
+        env:
+        - name: PYRMUTE_REGISTRY_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: registry-secrets
+              key: database-url
+        - name: PYRMUTE_REGISTRY_ENABLE_AUTH
+          value: "true"
+      restartPolicy: OnFailure
 ```
+
+**Note:** Save the admin key output from the init job and store it securely
+(e.g., in a Kubernetes Secret or external secret manager).
 
 ### Nginx Reverse Proxy
 
@@ -379,6 +591,10 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Forward authentication headers
+        proxy_set_header X-API-Key $http_x_api_key;
+        proxy_set_header Authorization $http_authorization;
     }
 }
 ```
@@ -406,28 +622,37 @@ server {
 - Includes database status, schema count, uptime
 - Use for monitoring dashboards
 
+### API Key Usage Tracking
+
+Monitor API key usage patterns:
+
+```sh
+# Get statistics
+curl http://localhost:8000/api-keys/stats \
+  -H "X-API-Key: <admin-key>"
+
+# View specific key usage
+curl http://localhost:8000/api-keys/1 \
+  -H "X-API-Key: <admin-key>"
+```
+
+Response includes:
+- `last_used_at` - When the key was last used
+- `use_count` - Total number of requests
+- `created_at` - When the key was created
+- `expires_at` - Expiration date (if set)
+
 ### Metrics
 
-The server logs all requests with timing information. Integrate with your
-logging infrastructure:
+The server logs all requests with timing and authentication information:
 
 ```bash
 # Example log output
 2025-01-15 10:30:00 - INFO - POST /schemas/user-service/User/versions - 201
+2025-01-15 10:30:01 - INFO - Authenticated with key: ci-cd-key (permission: write)
 2025-01-15 10:30:01 - INFO - GET /schemas - 200
-2025-01-15 10:30:02 - ERROR - Database error: connection timeout
-```
-
-### Prometheus Integration (Optional)
-
-Add prometheus metrics if needed:
-
-```python
-# Custom middleware for metrics
-from prometheus_client import Counter, Histogram
-
-request_count = Counter('registry_requests_total', 'Total requests')
-request_duration = Histogram('registry_request_duration_seconds', 'Request duration')
+2025-01-15 10:30:02 - WARNING - Invalid API key provided
+2025-01-15 10:30:03 - ERROR - Database error: connection timeout
 ```
 
 ## Troubleshooting
@@ -449,12 +674,53 @@ except Exception as e:
 ### Authentication Issues
 
 ```sh
-# Verify API key is set
-docker-compose exec registry env | grep API_KEY
+# Verify auth is enabled
+docker-compose exec registry env | grep ENABLE_AUTH
 
-# Test authentication
-curl -v -H "X-API-Key: wrong-key" http://localhost:8000/schemas
+# Test with invalid key
+curl -v -H "X-API-Key: invalid-key" http://localhost:8000/schemas
 # Should return 401 Unauthorized
+
+# Test with valid key
+curl -v -H "X-API-Key: <your-key>" http://localhost:8000/schemas
+# Should return 200 OK
+
+# Check if key is revoked or expired
+curl http://localhost:8000/api-keys/1 -H "X-API-Key: <admin-key>"
+```
+
+### Lost Admin Key
+
+If you lose your admin key:
+
+```sh
+# Option 1: Disable auth temporarily
+export PYRMUTE_REGISTRY_ENABLE_AUTH=false
+pyrmute-registry serve
+
+# Option 2: Direct database access (PostgreSQL)
+psql -d registry -U registry_user -c "SELECT name, permission, revoked FROM api_keys;"
+
+# Option 3: Create new admin key via database
+# Connect to container and use Python
+docker-compose exec registry python
+>>> from pyrmute_registry.server.db import SessionLocal
+>>> from pyrmute_registry.server.models.api_key import ApiKey, Permission
+>>> from pyrmute_registry.server.auth import hash_api_key
+>>> import secrets
+>>>
+>>> key = secrets.token_urlsafe(32)
+>>> print(f"New key: {key}")
+>>>
+>>> db = SessionLocal()
+>>> api_key = ApiKey(
+...     name="recovery-admin",
+...     key_hash=hash_api_key(key),
+...     permission=Permission.ADMIN.value,
+...     created_by="recovery"
+... )
+>>> db.add(api_key)
+>>> db.commit()
 ```
 
 ### Performance Issues
@@ -466,9 +732,10 @@ ps aux | grep uvicorn | wc -l
 # Increase workers
 export PYRMUTE_REGISTRY_WORKERS=8
 
-# Check database performance
-# Add indexes if slow:
+# Check database performance and add indexes
 CREATE INDEX idx_namespace_model ON schemas(namespace, model_name);
+CREATE INDEX idx_api_keys_active ON api_keys(revoked, expires_at);
+CREATE INDEX idx_api_keys_permission ON api_keys(permission);
 ```
 
 ### Logs
@@ -500,7 +767,7 @@ uv run pytest
 uv run pytest --cov=src/ --cov-report=html
 
 # Run specific test file
-uv run pytest tests/test_server/test_main.py
+uv run pytest tests/test_server/test_routers/test_api_keys_routes.py
 ```
 
 ### Code Quality
@@ -517,7 +784,15 @@ mypy src/ tests/
 ### Local Development
 
 ```bash
+# Auth disabled (default)
 pyrmute-registry serve --reload --port 8000
+
+# Auth enabled
+export PYRMUTE_REGISTRY_ENABLE_AUTH=true
+pyrmute-registry serve --reload
+
+# Create test admin key
+pyrmute-registry create-admin-key --name dev-admin
 
 # Run with debug logging
 export PYRMUTE_REGISTRY_LOG_LEVEL=DEBUG
@@ -526,11 +801,13 @@ pyrmute-registry serve
 
 ## API Examples
 
-### Register Schema
+### Schema Management
+
+#### Register Schema
 
 ```sh
 curl -X POST "http://localhost:8000/schemas/user-service/User/versions" \
-  -H "X-API-Key: your-key" \
+  -H "X-API-Key: <write-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "version": "1.0.0",
@@ -551,42 +828,118 @@ curl -X POST "http://localhost:8000/schemas/user-service/User/versions" \
   }'
 ```
 
-### Get Schema
+#### Get Schema
 
 ```sh
 curl "http://localhost:8000/schemas/user-service/User/versions/1.0.0" \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: <read-key>"
 ```
 
-### List Schemas
+#### List Schemas
 
 ```sh
 # All schemas
-curl "http://localhost:8000/schemas" -H "X-API-Key: your-key"
+curl "http://localhost:8000/schemas" -H "X-API-Key: <read-key>"
 
 # Filter by namespace
 curl "http://localhost:8000/schemas?namespace=user-service" \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: <read-key>"
 
 # Include deprecated
 curl "http://localhost:8000/schemas?include_deprecated=true" \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: <read-key>"
 ```
 
-### Compare Versions
+#### Compare Versions
 
 ```sh
 curl "http://localhost:8000/schemas/user-service/User/compare?from_version=1.0.0&to_version=2.0.0" \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: <read-key>"
 ```
 
-### Deprecate Schema
+#### Deprecate Schema
 
 ```sh
 curl -X POST \
   "http://localhost:8000/schemas/user-service/User/versions/1.0.0/deprecate?message=Security+vulnerability" \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: <write-key>"
 ```
+
+#### Delete Schema
+
+```sh
+curl -X DELETE \
+  "http://localhost:8000/schemas/user-service/User/versions/1.0.0?force=true" \
+  -H "X-API-Key: <delete-key>"
+```
+
+### API Key Management
+
+All API key management endpoints require ADMIN permission.
+
+#### Create API Key
+
+```sh
+curl -X POST http://localhost:8000/api-keys \
+  -H "X-API-Key: <admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "service-api-key",
+    "permission": "write",
+    "description": "API key for microservice",
+    "expires_in_days": 365
+  }'
+```
+
+#### List API Keys
+
+```sh
+# All active keys
+curl http://localhost:8000/api-keys \
+  -H "X-API-Key: <admin-key>"
+
+# Include revoked keys
+curl "http://localhost:8000/api-keys?include_revoked=true" \
+  -H "X-API-Key: <admin-key>"
+
+# Filter by permission
+curl "http://localhost:8000/api-keys?permission=write" \
+  -H "X-API-Key: <admin-key>"
+```
+
+#### Get Key Details
+
+```sh
+curl http://localhost:8000/api-keys/1 \
+  -H "X-API-Key: <admin-key>"
+```
+
+#### Revoke API Key
+
+```sh
+curl -X POST http://localhost:8000/api-keys/1/revoke \
+  -H "X-API-Key: <admin-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "revoked_by": "security-team",
+    "reason": "Suspected compromise"
+  }'
+```
+
+#### Delete API Key
+
+```sh
+curl -X DELETE http://localhost:8000/api-keys/1 \
+  -H "X-API-Key: <admin-key>"
+```
+
+#### Get Key Statistics
+
+```sh
+curl http://localhost:8000/api-keys/stats \
+  -H "X-API-Key: <admin-key>"
+```
+
 ## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for

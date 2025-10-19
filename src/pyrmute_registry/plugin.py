@@ -383,6 +383,7 @@ class RegistryPlugin:
         """
         try:
             health = self.client.health_check(detailed=True)
+
             if isinstance(health, dict) and not health.get("healthy", False):
                 msg = f"Registry server at {self.registry_url} is unhealthy: {health}"
                 logger.warning(msg)
