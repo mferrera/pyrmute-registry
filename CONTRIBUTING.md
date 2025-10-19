@@ -8,7 +8,6 @@ provides guidelines and instructions for contributing to the project.
 - [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
-- [Making Changes](#making-changes)
 - [Testing](#testing)
 - [Code Style](#code-style)
 - [Commit Messages](#commit-messages)
@@ -62,19 +61,20 @@ follow. Please be respectful and constructive in all interactions.
 ### Install Development Dependencies
 
 ```sh
-# Using pip
-pip install -e ".[dev,server,test]"
+# Using uv (recommended)
+uv sync --all-groups
 
-# Or using uv (recommended)
-uv pip install -e ".[dev,server,test]"
+# Using pip
+pip install . -e --group dev --group docs -- group server
 ```
 
 This installs:
 
 - The package in editable mode
-- Development tools (black, ruff, mypy)
+- Development tools (ruff, mypy)
 - Server dependencies (fastapi, sqlalchemy)
 - Testing tools (pytest, pytest-cov)
+- Documentation tools and packages
 
 ### Verify Installation
 
@@ -182,6 +182,7 @@ Use `unittest.mock` for external dependencies:
 from unittest.mock import Mock, patch
 
 def test_with_mocked_http() -> None:
+    """Tests with a mocked dependency."""
     with patch("httpx.Client.get") as mock_get:
         mock_get.return_value = Mock(
             status_code=200,
@@ -216,6 +217,8 @@ def sample_schema() -> dict[str, Any]:
     }
 ```
 
+Use existing fixtures if possible.
+
 ## Code Style
 
 ### Python Style Guide
@@ -225,7 +228,7 @@ We follow PEP 8 with some modifications:
 - **Line length**: 88 characters
 - **Quotes**: Double quotes for strings
 - **Imports**: Organized with ruff isort
-- **Type hints**: Required for all public functions
+- **Type hints**: Required for all functions and tests
 
 ### Tools
 
@@ -237,7 +240,7 @@ ruff check --fix src/ tests/  # Auto-fix issues
 
 **mypy** - Type checking:
 ```sh
-mypy src/
+mypy src/ tests/
 ```
 
 ## Commit Messages
@@ -274,6 +277,7 @@ Detailed explanation of what changed and why with a max 71 characters.
    - Update docstrings
    - Update README.md or SERVER.md
    - Add examples for new features
+   - Update documentation in docs/
 
 4. **Add tests** for new functionality
 
@@ -340,7 +344,6 @@ Detailed explanation of what changed and why with a max 71 characters.
 
 - **GitHub Issues**: For bugs and features
 - **GitHub Discussions**: For questions and discussions
-- **Email**: maintainer@example.com (if applicable)
 
 ## License
 
