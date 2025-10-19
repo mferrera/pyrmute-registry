@@ -49,7 +49,7 @@ class ApiKeyResponse(BaseModel):
     """Response model for API key (without sensitive data)."""
 
     model_config = ConfigDict(
-        from_attributes=True,  # Allows creation from SQLAlchemy model
+        from_attributes=True,
         json_schema_extra={
             "example": {
                 "id": 1,
@@ -64,8 +64,12 @@ class ApiKeyResponse(BaseModel):
                 "revoked_at": None,
                 "revoked_by": None,
                 "description": "API key for production service",
+                "rotated_from_id": None,
+                "rotated_to_id": None,
+                "rotation_scheduled_at": None,
                 "is_active": True,
                 "is_expired": False,
+                "is_rotation_due": False,
             }
         },
     )
@@ -88,10 +92,25 @@ class ApiKeyResponse(BaseModel):
         None, description="Who revoked the key (if applicable)"
     )
     description: str | None = Field(None, description="Description of key's purpose")
+
+    # Rotation fields
+    rotated_from_id: int | None = Field(
+        None, description="ID of the previous key this was rotated from"
+    )
+    rotated_to_id: int | None = Field(
+        None, description="ID of the new key this was rotated to"
+    )
+    rotation_scheduled_at: datetime | None = Field(
+        None, description="When this key will be automatically revoked (grace period)"
+    )
+
     is_active: bool = Field(
         ..., description="Whether the key is currently active (not revoked/expired)"
     )
     is_expired: bool = Field(..., description="Whether the key has expired")
+    is_rotation_due: bool = Field(
+        ..., description="Whether the rotation grace period has ended"
+    )
 
 
 class ApiKeyCreateResponse(ApiKeyResponse):
@@ -216,3 +235,85 @@ class ApiKeyStatsResponse(BaseModel):
     by_permission: dict[str, int] = Field(
         ..., description="Count of keys by permission level"
     )
+
+
+class ApiKeyRotateRequest(BaseModel):
+    """Request model for rotating an API key."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "grace_period_hours": 24,
+                "reason": "Scheduled quarterly rotation",
+            }
+        }
+    )
+
+    grace_period_hours: int = Field(
+        default=24,
+        ge=0,
+        le=168,  # Max 1 week (7 days)
+        description=(
+            "Hours to keep old key active (0 = immediate revoke, max 168 for 1 week)"
+        ),
+        examples=[0, 1, 24, 72, 168],
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional reason for rotation",
+    )
+
+
+class ApiKeyRotateResponse(BaseModel):
+    """Response model for key rotation (includes both old and new keys)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "old_key": {
+                    "id": 1,
+                    "name": "production-api",
+                    "permission": "write",
+                    "created_at": "2025-01-15T10:30:00Z",
+                    "created_by": "admin",
+                    "revoked": False,
+                    "rotation_scheduled_at": "2025-01-16T10:30:00Z",
+                    "rotated_to_id": 5,
+                    "is_active": True,
+                    "is_expired": False,
+                },
+                "new_key": {
+                    "id": 5,
+                    "name": "production-api-rotated-20250115",
+                    "permission": "write",
+                    "created_at": "2025-01-15T14:30:00Z",
+                    "created_by": "admin",
+                    "rotated_from_id": 1,
+                    "is_active": True,
+                    "is_expired": False,
+                    "api_key": "NEW_KEY_SAVE_IT_NOW",  # Only shown once!
+                },
+                "grace_period_ends_at": "2025-01-16T10:30:00Z",
+                "message": (
+                    "New key created. Old key will remain active until "
+                    "2025-01-16T10:30:00Z"
+                ),
+            }
+        }
+    )
+
+    old_key: ApiKeyResponse = Field(
+        ..., description="The original key (may still be active during grace period)"
+    )
+    new_key: ApiKeyCreateResponse = Field(
+        ...,
+        description="The new key with plaintext API key (SAVE THIS - shown only once!)",
+    )
+    grace_period_ends_at: datetime | None = Field(
+        None,
+        description=(
+            "When the old key will be automatically revoked (if grace period set)"
+        ),
+    )
+    message: str = Field(..., description="Human-readable status message")

@@ -15,6 +15,8 @@ from pyrmute_registry.server.schemas.api_key import (
     ApiKeyListResponse,
     ApiKeyResponse,
     ApiKeyRevokeRequest,
+    ApiKeyRotateRequest,
+    ApiKeyRotateResponse,
     ApiKeyStatsResponse,
 )
 
@@ -233,3 +235,108 @@ class ApiKeyService:
         self.db.commit()
 
         return True
+
+    # Add this method to the ApiKeyService class:
+
+    def rotate_api_key(
+        self: Self,
+        key_id: int,
+        rotation_data: ApiKeyRotateRequest,
+        rotated_by: str = "system",
+    ) -> ApiKeyRotateResponse:
+        """Rotate an API key, generating a new one with the same permissions.
+
+        Args:
+            key_id: ID of the API key to rotate.
+            rotation_data: Rotation configuration (grace period, reason).
+            rotated_by: Who initiated the rotation (from auth context).
+
+        Returns:
+            Response containing both old and new keys.
+
+        Raises:
+            HTTPException: If key not found or already revoked.
+        """
+        # Get existing key
+        old_key = self.db.query(ApiKey).filter(ApiKey.id == key_id).first()
+        if not old_key:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"API key with ID {key_id} not found",
+            )
+
+        if old_key.revoked:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot rotate revoked key '{old_key.name}'",
+            )
+
+        # Generate new key
+        plaintext_key = secrets.token_urlsafe(32)
+        key_hash = hash_api_key(plaintext_key)
+
+        # Create new key with same permissions
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        new_key = ApiKey(
+            name=f"{old_key.name}-rotated-{timestamp}",
+            key_hash=key_hash,
+            permission=old_key.permission,
+            created_by=rotated_by,
+            description=(
+                f"Rotated from key ID {old_key.id}. {rotation_data.reason or ''}"
+            ).strip(),
+            expires_at=old_key.expires_at,  # Preserve original expiration
+            rotated_from_id=old_key.id,
+        )
+
+        self.db.add(new_key)
+        self.db.flush()  # Get new_key.id
+
+        # Handle old key based on grace period
+        grace_period_ends_at = None
+        if rotation_data.grace_period_hours > 0:
+            # Keep old key active with scheduled revocation
+            grace_period_ends_at = datetime.now(UTC) + timedelta(
+                hours=rotation_data.grace_period_hours
+            )
+            old_key.rotation_scheduled_at = grace_period_ends_at
+            old_key.rotated_to_id = new_key.id
+
+            if rotation_data.reason:
+                old_key.description = (
+                    f"{old_key.description or ''}\n\n"
+                    f"Rotation scheduled: {rotation_data.reason}"
+                ).strip()
+
+            message = (
+                f"New key created. Old key will remain active until "
+                f"{grace_period_ends_at.isoformat()}"
+            )
+        else:
+            # Immediate revocation
+            old_key.revoked = True
+            old_key.revoked_at = datetime.now(UTC)
+            old_key.revoked_by = rotated_by
+            old_key.rotated_to_id = new_key.id
+
+            if rotation_data.reason:
+                old_key.description = (
+                    f"{old_key.description or ''}\n\n"
+                    f"Revoked (rotated): {rotation_data.reason}"
+                ).strip()
+
+            message = "New key created. Old key immediately revoked."
+
+        self.db.commit()
+        self.db.refresh(old_key)
+        self.db.refresh(new_key)
+
+        return ApiKeyRotateResponse(
+            old_key=ApiKeyResponse.model_validate(old_key),
+            new_key=ApiKeyCreateResponse(
+                **ApiKeyResponse.model_validate(new_key).model_dump(),
+                api_key=plaintext_key,
+            ),
+            grace_period_ends_at=grace_period_ends_at,
+            message=message,
+        )

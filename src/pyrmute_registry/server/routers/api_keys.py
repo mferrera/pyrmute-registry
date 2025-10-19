@@ -13,6 +13,8 @@ from pyrmute_registry.server.schemas.api_key import (
     ApiKeyListResponse,
     ApiKeyResponse,
     ApiKeyRevokeRequest,
+    ApiKeyRotateRequest,
+    ApiKeyRotateResponse,
     ApiKeyStatsResponse,
 )
 
@@ -152,3 +154,41 @@ def delete_api_key(
     Requires: ADMIN permission
     """
     service.delete_api_key(key_id)
+
+
+@router.post(
+    "/{key_id}/rotate",
+    response_model=ApiKeyRotateResponse,
+    summary="Rotate API key",
+    description=(
+        "Generate a new API key to replace an existing one. "
+        "The old key can remain active for a grace period to allow a transition. "
+        "**Important**: The new plaintext key is only shown once in this response!"
+    ),
+)
+def rotate_api_key(
+    key_id: Annotated[int, Path(description="API key ID to rotate")],
+    rotation_data: Annotated[ApiKeyRotateRequest, Body(...)],
+    service: ApiKeyServiceDep,
+    settings: SettingsDep,
+    _auth: AuthAdmin,
+) -> ApiKeyRotateResponse:
+    """Rotate an API key, generating a new one with the same permissions.
+
+    The old key can remain active during a grace period for zero-downtime rotation.
+    After the grace period, the old key should be manually revoked or use a background
+    job to auto-revoke expired rotation grace periods.
+
+    **IMPORTANT**: The plaintext API key for the new key is only returned once. Store
+    it securely. It cannot be retrieved later.
+
+    Requires: ADMIN permission
+    """
+    if not settings.enable_auth:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authentication is disabled. Enable it to manage API keys.",
+        )
+
+    rotated_by = _auth.name if _auth else "system"
+    return service.rotate_api_key(key_id, rotation_data, rotated_by=rotated_by)

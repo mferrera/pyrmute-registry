@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from pyrmute_registry.server.db import Base
@@ -44,6 +44,10 @@ class ApiKey(Base):
         revoked_at: When the key was revoked.
         revoked_by: Who revoked the key.
         metadata: Additional metadata (team, purpose, etc.).
+        rotated_from_id: ID of the previous key this was rotated from.
+        rotated_to_id: ID of the new key this was rotated to.
+        rotation_scheduled_at: When this key should be automatically revoked (grace
+            period).
     """
 
     __tablename__ = "api_keys"
@@ -139,6 +143,30 @@ class ApiKey(Base):
         comment="Who revoked the key",
     )
 
+    # Rotation tracking
+    rotated_from_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="ID of the previous key this was rotated from",
+    )
+
+    rotated_to_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="ID of the new key this was rotated to",
+    )
+
+    rotation_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment="When this key should be automatically revoked (grace period end)",
+    )
+
     # Additional metadata
     description: Mapped[str | None] = mapped_column(
         Text,
@@ -154,14 +182,21 @@ class ApiKey(Base):
         Index("idx_permission", "permission"),
         # Index for finding keys by creator
         Index("idx_created_by", "created_by"),
+        # Index for rotation tracking
+        Index("idx_rotation_chain", "rotated_from_id", "rotated_to_id"),
+        # Index for scheduled rotations
+        Index("idx_rotation_scheduled", "rotation_scheduled_at", "revoked"),
     )
 
     def __repr__(self) -> str:
         """String representation."""
         status = "REVOKED" if self.revoked else "ACTIVE"
+        rotation_info = ""
+        if self.rotation_scheduled_at and not self.revoked:
+            rotation_info = f", rotation_scheduled={self.rotation_scheduled_at}"
         return (
             f"<ApiKey(id={self.id}, name='{self.name}', "
-            f"permission='{self.permission}', status={status})>"
+            f"permission='{self.permission}', status={status}{rotation_info})>"
         )
 
     @property
@@ -207,6 +242,25 @@ class ApiKey(Base):
             expires = expires.replace(tzinfo=UTC)
 
         return now > expires
+
+    @property
+    def is_rotation_due(self) -> bool:
+        """Check if the rotation grace period has ended.
+
+        Returns:
+            True if rotation is scheduled and the time has passed.
+        """
+        if not self.rotation_scheduled_at or self.revoked:
+            return False
+
+        now = datetime.now(UTC)
+        scheduled = self.rotation_scheduled_at
+
+        # If rotation_scheduled_at is naive (from SQLite), assume UTC
+        if scheduled.tzinfo is None:
+            scheduled = scheduled.replace(tzinfo=UTC)
+
+        return now >= scheduled
 
     def has_permission(self, required: Permission) -> bool:
         """Check if this key has the required permission level.

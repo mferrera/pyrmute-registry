@@ -1,12 +1,19 @@
 """Test configuration and fixtures."""
 
+import os
+
+# These must be at the top.
+os.environ["PYRMUTE_REGISTRY_DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["PYRMUTE_REGISTRY_ENVIRONMENT"] = "test"
+os.environ["PYRMUTE_REGISTRY_ENABLE_AUTH"] = "false"
+
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -18,6 +25,29 @@ from pyrmute_registry.server.models.api_key import ApiKey, Permission
 
 # Test database URL
 TEST_DATABASE_URL = "sqlite:///:memory:"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _enforce_test_environment() -> Generator[None, None, None]:
+    """Enforce test environment for entire session."""
+    get_settings.cache_clear()
+
+    settings = get_settings()
+    assert settings.database_url == TEST_DATABASE_URL, (
+        f"Tests must use in-memory database, got: {settings.database_url}"
+    )
+    assert settings.is_test, "Tests must run in test environment"
+
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_settings_cache() -> Generator[None, None, None]:
+    """Clear settings cache before and after each test."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def get_test_settings() -> Settings:
@@ -40,22 +70,26 @@ def get_auth_settings() -> Settings:
     )
 
 
-@pytest.fixture(autouse=True)
-def reset_settings_cache() -> Generator[None, None, None]:
-    """Clear settings cache before each test."""
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
 @pytest.fixture(scope="function")
 def db_engine() -> Generator[Engine, None, None]:
-    """Create a new database engine for each test."""
+    """Create a new database engine for each test.
+
+    Uses StaticPool to ensure connection pooling works correctly
+    with SQLite in-memory databases and pytest-xdist.
+    """
     engine = create_engine(
         TEST_DATABASE_URL,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+        echo=False,  # Disable SQL logging in tests
     )
+
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_conn: Any, connection_record: Any) -> None:
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     Base.metadata.create_all(bind=engine)
     yield engine
     Base.metadata.drop_all(bind=engine)

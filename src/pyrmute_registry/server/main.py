@@ -104,8 +104,8 @@ def create_app() -> FastAPI:
         ),
         version=settings.app_version,
         lifespan=lifespan,
-        docs_url="/docs" if settings.is_development else None,
-        redoc_url="/redoc" if settings.is_development else None,
+        docs_url="/docs" if not settings.is_production else None,
+        redoc_url="/redoc" if not settings.is_production else None,
         openapi_url="/openapi.json",
         openapi_tags=[
             {
