@@ -1,6 +1,8 @@
 """Command-line interface for the Pyrmute Schema Registry server."""
 
+import secrets
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -8,9 +10,10 @@ import httpx
 import typer
 import uvicorn
 
-from .auth import generate_api_key as gen_key
+from .auth import hash_api_key
 from .config import get_settings
-from .db import init_db as db_init
+from .db import SessionLocal, init_db as db_init
+from .models.api_key import ApiKey, Permission
 
 app = typer.Typer(
     name="pyrmute-registry",
@@ -145,10 +148,10 @@ def init_db(
     [bold]Examples:[/bold]
 
       [dim]# Initialize with default database[/dim]
-      pyrmute-registry init-db
+      $ pyrmute-registry init-db
 
       [dim]# Initialize with custom database URL[/dim]
-      pyrmute-registry init-db --database-url postgresql://user:pass@localhost/db
+      $ pyrmute-registry init-db --database-url postgresql://user:pass@localhost/db
     """
     settings = get_settings()
     db_url = database_url or settings.database_url
@@ -161,6 +164,281 @@ def init_db(
     except Exception as e:
         typer.secho(f"✗ Failed to initialize database: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1) from e
+
+
+@app.command()
+def create_admin_key(
+    name: Annotated[
+        str,
+        typer.Option(
+            "--name",
+            "-n",
+            help="Name for the API key",
+            prompt="API key name",
+        ),
+    ],
+    permission: Annotated[
+        str,
+        typer.Option(
+            "--permission",
+            "-p",
+            help="Permission level (read, write, delete, admin)",
+        ),
+    ] = "admin",
+    description: Annotated[
+        str | None,
+        typer.Option(
+            "--description",
+            "-d",
+            help="Description of the key's purpose",
+        ),
+    ] = None,
+    expires_in_days: Annotated[
+        int | None,
+        typer.Option(
+            "--expires-in-days",
+            "-e",
+            help="Number of days until expiration (omit for no expiration)",
+        ),
+    ] = None,
+) -> None:
+    r"""Create an API key for authentication.
+
+    This command creates a new API key in the database. The plaintext key is only shown
+    once, so make sure to save it securely.
+
+    [bold]Examples:[/bold]
+
+      [dim]# Create an admin key interactively[/dim]
+      $ pyrmute-registry create-admin-key
+
+      [dim]# Create a read-only key[/dim]
+      $ pyrmute-registry create-admin-key --name readonly --permission read
+
+      [dim]# Create a key that expires in 90 days[/dim]
+      $ pyrmute-registry create-admin-key --name temp-key --expires-in-days 90
+
+      [dim]# Create a write key with description[/dim]
+      $ pyrmute-registry create-admin-key \\
+          --name ci-cd \\
+          --permission write \\
+          --description "CI/CD pipeline key"
+    """
+    # Validate permission
+    try:
+        perm = Permission(permission.lower())
+    except ValueError as e:
+        typer.secho(
+            f"✗ Invalid permission: {permission}. "
+            f"Must be one of: read, write, delete, admin",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1) from e
+
+    # Generate secure API key
+    plaintext_key = secrets.token_urlsafe(32)
+    key_hash = hash_api_key(plaintext_key)
+
+    # Calculate expiration
+    expires_at = None
+    if expires_in_days:
+        expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
+
+    # Create database record
+    db = SessionLocal()
+    try:
+        # Check if name already exists
+        existing = db.query(ApiKey).filter(ApiKey.name == name).first()
+        if existing:
+            typer.secho(
+                f"✗ API key with name '{name}' already exists",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(code=1)
+
+        api_key = ApiKey(
+            name=name,
+            key_hash=key_hash,
+            permission=perm.value,
+            created_by="cli",
+            description=description or f"Created via CLI on {datetime.now(UTC).date()}",
+            expires_at=expires_at,
+        )
+
+        db.add(api_key)
+        db.commit()
+        db.refresh(api_key)
+
+        # Display success message with key details
+        typer.secho("✓ API Key created successfully!", fg=typer.colors.GREEN, bold=True)
+        typer.echo("")
+        typer.echo("Key Details:")
+        typer.echo("=" * 60)
+        typer.echo(f"Name:        {api_key.name}")
+        typer.echo(f"Permission:  {api_key.permission}")
+        typer.echo(f"Created:     {api_key.created_at}")
+        if api_key.expires_at:
+            typer.echo(f"Expires:     {api_key.expires_at}")
+        else:
+            typer.echo("Expires:     Never")
+        typer.echo("")
+        typer.echo("API Key (save this - it won't be shown again):")
+        typer.secho(plaintext_key, fg=typer.colors.CYAN, bold=True)
+        typer.echo("")
+        typer.echo("Usage:")
+        typer.echo(
+            f"  curl -H 'X-API-Key: {plaintext_key}' http://localhost:8000/schemas"
+        )
+        typer.echo("  or")
+        typer.echo(
+            f"  curl -H 'Authorization: Bearer {plaintext_key}' http://localhost:8000/schemas"
+        )
+        typer.echo("")
+        typer.secho(
+            "⚠️  IMPORTANT: Save this key securely. It cannot be recovered!",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+
+    except Exception as e:
+        db.rollback()
+        typer.secho(f"✗ Failed to create API key: {e}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    finally:
+        db.close()
+
+
+@app.command()
+def list_keys(
+    include_revoked: Annotated[
+        bool,
+        typer.Option(
+            "--include-revoked",
+            help="Include revoked keys in the list",
+        ),
+    ] = False,
+) -> None:
+    """List all API keys in the database.
+
+    [bold]Examples:[/bold]
+
+      [dim]# List active keys[/dim]
+      $ pyrmute-registry list-keys
+
+      [dim]# List all keys including revoked[/dim]
+      $ pyrmute-registry list-keys --include-revoked
+    """
+    db = SessionLocal()
+    try:
+        query = db.query(ApiKey)
+
+        if not include_revoked:
+            query = query.filter(ApiKey.revoked == False)  # noqa: E712
+
+        keys = query.order_by(ApiKey.created_at.desc()).all()
+
+        if not keys:
+            typer.echo("No API keys found.")
+            return
+
+        typer.echo(f"Found {len(keys)} API key(s):")
+        typer.echo("=" * 80)
+
+        for key in keys:
+            status = "REVOKED" if key.revoked else "ACTIVE"
+            if key.is_expired:
+                status = "EXPIRED"
+
+            color = (
+                typer.colors.RED
+                if key.revoked or key.is_expired
+                else typer.colors.GREEN
+            )
+
+            typer.secho(f"\n{key.name} [{status}]", fg=color, bold=True)
+            typer.echo(f"  ID:         {key.id}")
+            typer.echo(f"  Permission: {key.permission}")
+            typer.echo(f"  Created:    {key.created_at} by {key.created_by}")
+            if key.last_used_at:
+                typer.echo(f"  Last used:  {key.last_used_at} ({key.use_count} times)")
+            else:
+                typer.echo("  Last used:  Never")
+            if key.expires_at:
+                typer.echo(f"  Expires:    {key.expires_at}")
+            if key.description:
+                typer.echo(f"  Description: {key.description}")
+            if key.revoked:
+                typer.echo(f"  Revoked:    {key.revoked_at} by {key.revoked_by}")
+
+    finally:
+        db.close()
+
+
+@app.command()
+def revoke_key(
+    name: Annotated[
+        str,
+        typer.Argument(help="Name of the API key to revoke"),
+    ],
+    reason: Annotated[
+        str | None,
+        typer.Option(
+            "--reason",
+            "-r",
+            help="Reason for revocation",
+        ),
+    ] = None,
+) -> None:
+    """Revoke an API key.
+
+    [bold]Examples:[/bold]
+
+      [dim]# Revoke a key[/dim]
+      $ pyrmute-registry revoke-key my-key
+
+      [dim]# Revoke with reason[/dim]
+      $ pyrmute-registry revoke-key my-key --reason "Key compromised"
+    """
+    db = SessionLocal()
+    try:
+        key = db.query(ApiKey).filter(ApiKey.name == name).first()
+
+        if not key:
+            typer.secho(f"✗ API key '{name}' not found", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        if key.revoked:
+            typer.secho(
+                f"✗ API key '{name}' is already revoked", fg=typer.colors.YELLOW
+            )
+            raise typer.Exit(code=1)
+
+        # Confirm revocation
+        if not typer.confirm(f"Are you sure you want to revoke '{name}'?"):
+            typer.echo("Revocation cancelled.")
+            raise typer.Abort
+
+        # Revoke the key
+        key.revoked = True
+        key.revoked_at = datetime.now(UTC)
+        key.revoked_by = "cli"
+
+        if reason:
+            if key.description:
+                key.description += f"\n\nRevocation reason: {reason}"
+            else:
+                key.description = f"Revocation reason: {reason}"
+
+        db.commit()
+
+        typer.secho(f"✓ API key '{name}' has been revoked", fg=typer.colors.GREEN)
+
+    except Exception as e:
+        db.rollback()
+        typer.secho(f"✗ Failed to revoke key: {e}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    finally:
+        db.close()
 
 
 @app.command()
@@ -230,7 +508,6 @@ def config() -> None:
     """Show the current configuration.
 
     Displays all configuration values from environment variables and the .env file.
-    Sensitive values like API keys are masked.
     """
     settings = get_settings()
 
@@ -253,10 +530,6 @@ def config() -> None:
     typer.echo("")
     typer.echo("Authentication:")
     typer.echo(f"  Enabled: {settings.enable_auth}")
-    if settings.api_key:
-        typer.echo(f"  API Key: {'*' * 8}")
-    else:
-        typer.echo("  API Key: (not set)")
     typer.echo("")
     typer.echo("CORS:")
     typer.echo(f"  Origins: {settings.cors_origins}")
@@ -264,40 +537,6 @@ def config() -> None:
     typer.echo("")
     typer.echo("Logging:")
     typer.echo(f"  Level: {settings.log_level}")
-
-
-@app.command()
-def generate_api_key(
-    length: Annotated[
-        int,
-        typer.Option(
-            "--length",
-            "-l",
-            help="Length of the key in bytes (output will be 2x in hex)",
-        ),
-    ] = 32,
-) -> None:
-    """Generate a secure random API key.
-
-    The generated key can be used for the PYRMUTE_REGISTRY_API_KEY environment variable.
-
-    [bold]Examples:[/bold]
-
-      [dim]# Generate default 32-byte key (64 characters)[/dim]
-      $ pyrmute-registry generate-api-key
-
-      [dim]# Generate shorter 16-byte key (32 characters)[/dim]
-      $ pyrmute-registry generate-api-key --length 16
-    """
-    key = gen_key(length)
-
-    typer.echo("Generated API Key:")
-    typer.secho(key, fg=typer.colors.GREEN, bold=True)
-    typer.echo("")
-    typer.echo("Add this to your .env file:")
-    typer.secho(f"PYRMUTE_REGISTRY_API_KEY={key}", fg=typer.colors.CYAN)
-    typer.echo("")
-    typer.echo("⚠️  Keep this key secure and never commit it to version control!")
 
 
 @app.command()
@@ -360,8 +599,8 @@ PYRMUTE_REGISTRY_DATABASE_URL=sqlite:///./registry.db
 PYRMUTE_REGISTRY_DATABASE_ECHO=false
 
 # Authentication
+# Set to true and create API keys using: pyrmute-registry create-admin-key
 PYRMUTE_REGISTRY_ENABLE_AUTH=false
-PYRMUTE_REGISTRY_API_KEY=your-secret-api-key-here
 
 # CORS
 PYRMUTE_REGISTRY_CORS_ORIGINS=["*"]

@@ -1,9 +1,12 @@
 """Tests for the RegistryPlugin."""
 
+import warnings
 from typing import Any
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
+from httpx import codes
 from pydantic import BaseModel
 from pyrmute import ModelManager, ModelVersion
 
@@ -1486,3 +1489,216 @@ def test_multiple_models_registration(model_manager: ModelManager) -> None:
         # Should have registered all three models
         assert mock_instance.register_schema.call_count == 3
         assert len(plugin.get_registered_models()) == 3
+
+
+def test_plugin_check_connectivity_healthy(model_manager: ModelManager) -> None:
+    """Test plugin connectivity check with healthy registry."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "status": "healthy",
+                "schemas_count": 10,
+            },
+        )
+
+        # Should not raise or warn
+        plugin = RegistryPlugin(
+            model_manager,
+            registry_url="http://localhost:8000",
+            fail_on_error=False,
+        )
+
+        assert plugin.client is not None
+
+
+def test_plugin_check_connectivity_unhealthy_no_fail() -> None:
+    """Test plugin handles unhealthy registry when fail_on_error=False."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        mock_get.return_value = Mock(
+            status_code=codes.SERVICE_UNAVAILABLE,
+            text="Database down",
+        )
+
+        # Should warn but not raise
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            plugin = RegistryPlugin(
+                mock_manager,
+                registry_url="http://localhost:8000",
+                fail_on_error=False,
+            )
+
+            assert len(w) == 1
+            assert "unhealthy" in str(w[0].message).lower()
+            assert plugin.client is not None
+
+
+def test_plugin_check_connectivity_unhealthy_with_fail() -> None:
+    """Test plugin raises when registry unhealthy and fail_on_error=True."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "status": "unhealthy",
+                "error": "Database connection lost",
+            },
+        )
+
+        with pytest.raises(RegistryConnectionError) as exc_info:
+            RegistryPlugin(
+                mock_manager,
+                registry_url="http://localhost:8000",
+                fail_on_error=True,
+            )
+
+        assert "unhealthy" in str(exc_info.value).lower()
+
+
+def test_plugin_check_connectivity_connection_error_no_fail() -> None:
+    """Test plugin handles connection errors when fail_on_error=False."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        mock_get.side_effect = httpx.ConnectError("Connection refused")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            plugin = RegistryPlugin(
+                mock_manager,
+                registry_url="http://localhost:8000",
+                fail_on_error=False,
+            )
+
+            assert len(w) == 1
+            assert "unavailable" in str(w[0].message).lower()
+            assert plugin.client is not None
+
+
+def test_plugin_check_connectivity_connection_error_with_fail() -> None:
+    """Test plugin raises on connection errors when fail_on_error=True."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        mock_get.side_effect = httpx.ConnectError("Connection refused")
+
+        with pytest.raises(RegistryConnectionError) as exc_info:
+            RegistryPlugin(
+                mock_manager,
+                registry_url="http://localhost:8000",
+                fail_on_error=True,
+            )
+
+        assert "unable to connect" in str(exc_info.value).lower()
+
+
+def test_plugin_check_connectivity_timeout_error() -> None:
+    """Test plugin handles timeout errors gracefully."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        mock_get.side_effect = httpx.TimeoutException("Request timeout")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            RegistryPlugin(
+                mock_manager,
+                registry_url="http://localhost:8000",
+                fail_on_error=False,
+            )
+
+            assert len(w) == 1
+            assert "unavailable" in str(w[0].message).lower()
+
+
+def test_plugin_check_connectivity_malformed_response() -> None:
+    """Test plugin handles malformed health response."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        # Response with no "healthy" or "status" fields
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {"some_field": "some_value"},
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            plugin = RegistryPlugin(
+                mock_manager,
+                registry_url="http://localhost:8000",
+                fail_on_error=False,
+            )
+
+            # Should warn because healthy will be False due to missing "status"
+            assert len(w) == 1
+            assert plugin.client is not None
+
+
+def test_plugin_health_check_method() -> None:
+    """Test plugin's health_check method returns correct status."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        # Initial connectivity check
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {"status": "healthy", "schemas_count": 5},
+        )
+
+        plugin = RegistryPlugin(
+            mock_manager,
+            registry_url="http://localhost:8000",
+            namespace="test-service",
+        )
+
+        # Test plugin's own health check
+        health = plugin.health_check()
+
+        assert health["plugin_active"] is True
+        assert health["registry_healthy"] is True
+        assert health["namespace"] == "test-service"
+        assert "registry_details" in health
+
+
+def test_plugin_health_check_unhealthy_registry() -> None:
+    """Test plugin health check reports unhealthy registry."""
+    with (
+        patch("httpx.Client.get") as mock_get,
+        patch("pyrmute_registry.plugin.ModelManager") as mock_manager,
+    ):
+        # Initial connectivity check - healthy
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {"status": "healthy"},
+        )
+
+        plugin = RegistryPlugin(
+            mock_manager,
+            registry_url="http://localhost:8000",
+            fail_on_error=False,
+        )
+
+        # Now make registry unhealthy for the health_check call
+        mock_get.return_value = Mock(
+            status_code=codes.SERVICE_UNAVAILABLE,
+            text="Service down",
+        )
+
+        health = plugin.health_check()
+
+        assert health["plugin_active"] is True
+        assert health["registry_healthy"] is False
+        assert "registry_details" in health
+        assert health["registry_details"]["healthy"] is False

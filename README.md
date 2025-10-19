@@ -20,15 +20,16 @@ data models.
 - **Multi-Service Coordination** - Share schemas between services
 - **Zero-Config Integration** - Drop-in plugin for existing pyrmute projects
 - **Robust Error Handling** - Graceful degradation when registry is unavailable
-- **Authentication Support** - API key-based security
+- **Database-Backed Authentication** - Secure API key management with granular
+      permissions
 
 ## Installation
 
-```bash
+```sh
 pip install pyrmute-registry
 ```
 
-Or with extras:
+Or with server components:
 
 ```bash
 pip install pyrmute-registry[server]  # Include FastAPI server components
@@ -87,7 +88,7 @@ Set configuration via environment variables:
 ```bash
 export PYRMUTE_REGISTRY_URL="http://registry:8000"
 export PYRMUTE_REGISTRY_NAMESPACE="user-service"  # Optional, None for global
-export PYRMUTE_REGISTRY_API_KEY="your-api-key"    # Optional
+export PYRMUTE_REGISTRY_API_KEY="your-api-key"    # Optional, required if server has auth enabled
 ```
 
 Then use without explicit configuration:
@@ -116,7 +117,7 @@ plugin = RegistryPlugin(
     auto_register=True,                   # Auto-register on model definition
     fail_on_error=False,                  # Raise exceptions on registry errors
     verify_ssl=True,                      # Verify SSL certificates
-    api_key=None,                         # Optional API key for auth
+    api_key=None,                         # Optional API key (required if server has auth enabled)
     allow_overwrite=False,                # Allow overwriting existing schemas
     metadata={"team": "platform"},        # Default metadata for all schemas
 )
@@ -132,7 +133,55 @@ client = RegistryClient(
     timeout=30.0,           # Request timeout in seconds
     max_retries=3,          # Retry attempts for transient failures
     verify_ssl=True,        # Verify SSL certificates
-    api_key=None,           # Optional API key
+    api_key=None,           # Optional API key (required if server has auth enabled)
+)
+```
+
+## Authentication
+
+When the registry server has authentication enabled, you'll need an API key to
+access most endpoints (except `/health/*` and `/`).
+
+### Getting an API Key
+
+Ask your registry administrator to create an API key for you with appropriate
+permissions, or if you're the administrator, use the CLI:
+
+```bash
+# Create an admin key (requires direct server access)
+pyrmute-registry create-admin-key --name "my-service"
+```
+
+**IMPORTANT:** The API key will only be shown once. Save it securely!
+
+### Permission Levels
+
+| Permission | Read Schemas | Create/Update | Deprecate | Delete Schemas | Manage API Keys |
+|------------|--------------|---------------|-----------|----------------|-----------------|
+| READ       | ✅           | ❌            | ❌        | ❌             | ❌              |
+| WRITE      | ✅           | ✅            | ✅        | ❌             | ❌              |
+| DELETE     | ✅           | ✅            | ✅        | ✅             | ❌              |
+| ADMIN      | ✅           | ✅            | ✅        | ✅             | ✅              |
+
+### Using API Keys
+
+Provide your API key when creating the client or plugin:
+
+```python
+# Via plugin
+plugin = RegistryPlugin(
+    manager,
+    registry_url="http://registry:8000",
+    namespace="user-service",
+    api_key="your-api-key-here",  # Or set PYRMUTE_REGISTRY_API_KEY env var
+)
+
+# Via client
+from pyrmute_registry import RegistryClient
+
+client = RegistryClient(
+    base_url="http://registry:8000",
+    api_key="your-api-key-here",  # Or set PYRMUTE_REGISTRY_API_KEY env var
 )
 ```
 
@@ -150,7 +199,7 @@ Pyrmute Registry supports multi-tenant schema organization through namespaces:
 ### Working with Namespaces
 
 ```python
-# Register namespaced schema
+# Register namespaced schema (requires WRITE permission)
 client.register_schema(
     "User",
     "1.0.0",
@@ -159,7 +208,7 @@ client.register_schema(
     namespace="auth-service",  # Scoped to auth-service
 )
 
-# Register global schema
+# Register global schema (requires WRITE permission)
 client.register_schema(
     "CommonModel",
     "1.0.0",
@@ -168,19 +217,19 @@ client.register_schema(
     namespace=None,  # Available to all services
 )
 
-# Get namespaced schema
+# Get namespaced schema (requires READ permission)
 schema = client.get_schema("User", "1.0.0", namespace="auth-service")
 
-# Get global schema
+# Get global schema (requires READ permission)
 schema = client.get_schema("CommonModel", "1.0.0", namespace=None)
 
-# List schemas in a namespace
+# List schemas in a namespace (requires READ permission)
 schemas = client.list_schemas(namespace="auth-service")
 
-# List all global schemas
+# List all global schemas (requires READ permission)
 schemas = client.list_schemas(namespace="")
 
-# List schemas across all namespaces
+# List schemas across all namespaces (requires READ permission)
 schemas = client.list_schemas()  # namespace=None means all
 ```
 
@@ -195,6 +244,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",  # Needs WRITE permission
     auto_register=False,  # Don't auto-register
 )
 
@@ -233,6 +283,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="...",
     namespace="catalog-service",
+    api_key="your-api-key",  # Needs WRITE permission
     auto_register=False
 )
 results = plugin.register_existing_models()
@@ -248,7 +299,10 @@ Find schemas from other services:
 ```python
 from pyrmute_registry import RegistryClient
 
-client = RegistryClient("http://registry:8000")
+client = RegistryClient(
+    "http://registry:8000",
+    api_key="your-api-key"  # Needs READ permission
+)
 
 # List all schemas (across all namespaces)
 schemas = client.list_schemas()
@@ -276,7 +330,7 @@ print(f"Latest: {latest_user['version']}")
 Compare schemas across versions:
 
 ```python
-# Compare two versions in same namespace
+# Compare two versions in same namespace (requires READ permission)
 diff = client.compare_schemas(
     "User",
     "1.0.0",
@@ -298,7 +352,7 @@ if not comparison["matches"]:
 Mark schemas as deprecated:
 
 ```python
-# Deprecate a schema version
+# Deprecate a schema version (requires WRITE permission)
 client.deprecate_schema(
     "User",
     "1.0.0",
@@ -306,16 +360,33 @@ client.deprecate_schema(
     message="Security vulnerability. Please upgrade to 2.0.0"
 )
 
-# List including deprecated schemas
+# List including deprecated schemas (requires READ permission)
 schemas = client.list_schemas(
     namespace="user-service",
     include_deprecated=True
 )
 
 for schema in schemas["schemas"]:
-    if schema["deprecated_versions"]:
+    if schema.get("deprecated_versions"):
         print(f"Deprecated: {schema['deprecated_versions']}")
 ```
+
+### Schema Deletion
+
+Delete schemas permanently:
+
+```python
+# Delete a schema (requires DELETE permission)
+client.delete_schema(
+    "User",
+    "1.0.0",
+    namespace="user-service",
+    force=True  # Required parameter
+)
+```
+
+**Warning:** Deletion is permanent. Consider deprecating schemas instead of
+deleting them to maintain audit trail.
 
 ### Synchronization
 
@@ -348,7 +419,7 @@ if not status["in_sync"]:
 Ensure your local schema matches the registry:
 
 ```python
-# Check if schemas match
+# Check if schemas match (requires READ permission)
 is_valid = plugin.validate_against_registry("User", "1.0.0")
 if not is_valid:
     print("Warning: Local schema differs from registry!")
@@ -374,6 +445,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",
     fail_on_error=True,  # Raise on errors
 )
 
@@ -395,6 +467,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",
     fail_on_error=False,  # Default: warn but continue
 )
 
@@ -417,6 +490,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",
     metadata={
         "team": "platform",
         "owner": "alice@example.com",
@@ -456,8 +530,11 @@ For advanced use cases, use the client without the plugin:
 ```python
 from pyrmute_registry import RegistryClient
 
-with RegistryClient("http://registry:8000") as client:
-    # Register a namespaced schema
+with RegistryClient(
+    "http://registry:8000",
+    api_key="your-api-key"  # Needs appropriate permission
+) as client:
+    # Register a namespaced schema (requires WRITE permission)
     client.register_schema(
         model_name="User",
         version="1.0.0",
@@ -472,7 +549,7 @@ with RegistryClient("http://registry:8000") as client:
         metadata={"author": "Alice"},
     )
 
-    # Register a global schema
+    # Register a global schema (requires WRITE permission)
     client.register_schema(
         model_name="CommonType",
         version="1.0.0",
@@ -481,11 +558,11 @@ with RegistryClient("http://registry:8000") as client:
         namespace=None,  # Global
     )
 
-    # List all versions in namespace
+    # List all versions in namespace (requires READ permission)
     versions = client.list_versions("User", namespace="user-service")
     print(f"Available versions: {versions}")
 
-    # Delete a schema (use with caution!)
+    # Delete a schema (requires DELETE permission)
     client.delete_schema(
         "User",
         "0.9.0",
@@ -506,6 +583,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",  # Scoped to this service
+    api_key="your-api-key",
 )
 
 # Global schemas (shared models)
@@ -513,6 +591,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace=None,  # Available to all services
+    api_key="your-api-key",
 )
 ```
 
@@ -575,6 +654,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",
     metadata={
         "team": "platform-team",
         "owner": "alice@company.com",
@@ -595,6 +675,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",
     fail_on_error=False,  # Don't break service if registry is down
 )
 
@@ -603,6 +684,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",
     fail_on_error=True,  # Catch schema issues early
 )
 ```
@@ -617,6 +699,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="...",
     namespace="user-service",
+    api_key="your-api-key",  # Use READ permission key
     auto_register=False
 )
 
@@ -635,6 +718,36 @@ if not all_valid:
     sys.exit(1)
 ```
 
+## Registry Server
+
+To run your own registry server, see [SERVER.md](SERVER.md) for:
+
+- Server installation and setup
+- Database configuration (PostgreSQL/SQLite)
+- Authentication and API key management
+- Deployment guides (Docker, Kubernetes)
+- Health monitoring and troubleshooting
+
+Quick server start:
+
+```bash
+# Install with server components
+pip install pyrmute-registry[server]
+
+# Initialize database
+pyrmute-registry init-db
+
+# Start server (auth disabled by default for development)
+pyrmute-registry serve
+
+# Or with authentication enabled
+export PYRMUTE_REGISTRY_ENABLE_AUTH=true
+pyrmute-registry serve
+
+# Create admin key (when auth enabled)
+pyrmute-registry create-admin-key --name admin
+```
+
 ## Troubleshooting
 
 ### Registry Connection Issues
@@ -644,13 +757,38 @@ if not all_valid:
 plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
-    namespace="user-service"
+    namespace="user-service",
+    api_key="your-api-key",
 )
 health = plugin.health_check()
 
 if not health["registry_healthy"]:
     print(f"Registry is down: {health.get('registry_error')}")
     # Check network, DNS, firewall rules
+```
+
+### Authentication Issues
+
+```python
+# If you get 401 Unauthorized errors:
+# 1. Verify auth is enabled on the server
+# 2. Check if your API key is valid and not expired/revoked
+# 3. Ensure your key has the right permission level
+
+# Test with health endpoint (no auth required)
+from pyrmute_registry import RegistryClient
+
+client = RegistryClient("http://registry:8000")
+health = client.health_check()
+print(health)  # Should work without API key
+
+# Test with authenticated endpoint
+client = RegistryClient("http://registry:8000", api_key="your-api-key")
+try:
+    schemas = client.list_schemas()
+    print("Authentication successful")
+except Exception as e:
+    print(f"Authentication failed: {e}")
 ```
 
 ### Schema Conflicts
@@ -661,6 +799,7 @@ plugin = RegistryPlugin(
     manager,
     registry_url="http://registry:8000",
     namespace="user-service",
+    api_key="your-api-key",  # Needs WRITE permission
     allow_overwrite=True,  # Allow replacing schemas
 )
 
@@ -668,12 +807,12 @@ plugin = RegistryPlugin(
 from pyrmute_registry.exceptions import SchemaConflictError
 
 try:
-    plugin._register_schema_safe("User", "1.0.0", schema)
+    plugin.register_schema_safe("User", "1.0.0", schema)
 except SchemaConflictError:
-    # Delete old schema first
+    # Delete old schema first (needs DELETE permission)
     client.delete_schema("User", "1.0.0", namespace="user-service", force=True)
     # Then register new one
-    plugin._register_schema_safe("User", "1.0.0", schema)
+    plugin.register_schema_safe("User", "1.0.0", schema)
 ```
 
 ### Schema Drift

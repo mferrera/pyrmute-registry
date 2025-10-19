@@ -501,6 +501,7 @@ class RegistryClient:
 
         Returns:
             True/False if detailed=False, or dict with health details if detailed=True.
+            The dict will always contain a "healthy" key for easy status checking.
 
         Example:
             ```python
@@ -510,8 +511,9 @@ class RegistryClient:
 
             # Detailed health check
             health = client.health_check(detailed=True)
-            print(f"Status: {health['status']}")
-            print(f"Schemas: {health['schemas_count']}")
+            if health["healthy"]:
+                print(f"Status: {health.get('status')}")
+                print(f"Schemas: {health.get('schemas_count')}")
             ```
         """
         self._ensure_open()
@@ -528,18 +530,26 @@ class RegistryClient:
             if response.status_code == codes.OK:
                 result: dict[str, Any] = response.json()
                 logger.info("Successful health check")
+                result["healthy"] = result.get("status") == "healthy"
                 return result
 
             return {
                 "healthy": False,
+                "status": "unhealthy",
                 "status_code": response.status_code,
                 "error": response.text,
             }
 
         except httpx.HTTPError as e:
+            if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):
+                raise RegistryConnectionError(
+                    f"Unable to connect to registry at {self.base_url}: {e}"
+                ) from e
+
             if detailed:
                 return {
                     "healthy": False,
+                    "status": "unhealthy",
                     "error": str(e),
                 }
             return False

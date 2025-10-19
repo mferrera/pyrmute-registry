@@ -595,27 +595,188 @@ def test_health_check_unhealthy() -> None:
 
 
 def test_health_check_connection_error() -> None:
-    """Test health check with connection error."""
+    """Test health check raises on connection error."""
     with patch("httpx.Client.get") as mock_get:
-        mock_get.side_effect = httpx.ConnectError("Connection failed")
+        mock_get.side_effect = httpx.ConnectError("Connection refused")
 
         client = RegistryClient("http://localhost:8000")
-        result = client.health_check()
+
+        with pytest.raises(RegistryConnectionError) as exc_info:
+            client.health_check()
+
+        assert "unable to connect" in str(exc_info.value).lower()
+
+
+def test_health_check_timeout() -> None:
+    """Test health check raises on timeout."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.side_effect = httpx.TimeoutException("Request timeout")
+
+        client = RegistryClient("http://localhost:8000")
+
+        with pytest.raises(RegistryConnectionError) as exc_info:
+            client.health_check()
+
+        assert "unable to connect" in str(exc_info.value).lower()
+
+
+def test_health_check_simple_healthy() -> None:
+    """Test simple health check returns True when healthy."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {"status": "healthy"},
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=False)
+
+        assert result is True
+        assert mock_get.call_count == 1
+
+
+def test_health_check_simple_unhealthy() -> None:
+    """Test simple health check returns False when unhealthy."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.SERVICE_UNAVAILABLE,
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=False)
 
         assert result is False
 
 
-def test_health_check_detailed_connection_error() -> None:
-    """Test detailed health check with connection error."""
+def test_health_check_detailed_healthy() -> None:
+    """Test detailed health check with healthy status."""
     with patch("httpx.Client.get") as mock_get:
-        mock_get.side_effect = httpx.ConnectError("Connection failed")
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "status": "healthy",
+                "version": "1.0.0",
+                "schemas_count": 42,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=True)
+
+        assert isinstance(result, dict)
+        assert result["healthy"] is True
+        assert result["status"] == "healthy"
+        assert result["version"] == "1.0.0"
+        assert result["schemas_count"] == 42
+
+
+def test_health_check_detailed_unhealthy_status_code() -> None:
+    """Test detailed health check with non-OK status code."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.SERVICE_UNAVAILABLE,
+            text="Database connection failed",
+        )
 
         client = RegistryClient("http://localhost:8000")
         result = client.health_check(detailed=True)
 
         assert isinstance(result, dict)
         assert result["healthy"] is False
-        assert "error" in result
+        assert result["status"] == "unhealthy"
+        assert result["status_code"] == codes.SERVICE_UNAVAILABLE
+        assert "Database connection failed" in result["error"]
+
+
+def test_health_check_detailed_connection_error() -> None:
+    """Test detailed health check raises on connection errors."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.side_effect = httpx.ConnectError("Connection refused")
+
+        client = RegistryClient("http://localhost:8000")
+
+        with pytest.raises(RegistryConnectionError) as exc_info:
+            client.health_check(detailed=True)
+
+        assert "Connection refused" in str(exc_info.value)
+
+
+def test_health_check_simple_connection_error() -> None:
+    """Test simple health check raises on connection errors."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.side_effect = httpx.TimeoutException("Timeout")
+
+        client = RegistryClient("http://localhost:8000")
+
+        with pytest.raises(RegistryConnectionError) as exc_info:
+            client.health_check(detailed=False)
+
+        assert "Timeout" in str(exc_info.value)
+
+
+def test_health_check_detailed_other_http_error() -> None:
+    """Test detailed health check handles non-connection HTTP errors."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.side_effect = httpx.HTTPError("Some other error")
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=True)
+
+        assert isinstance(result, dict)
+        assert result["healthy"] is False
+        assert result["status"] == "unhealthy"
+        assert "Some other error" in result["error"]
+
+
+def test_health_check_simple_other_http_error() -> None:
+    """Test simple health check returns False on non-connection HTTP errors."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.side_effect = httpx.HTTPError("Some other error")
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=False)
+
+        assert result is False
+
+
+def test_health_check_detailed_server_returns_unhealthy_status() -> None:
+    """Test when server explicitly returns unhealthy status."""
+    with patch("httpx.Client.get") as mock_get:
+        # Server returns 200 but with unhealthy status
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "status": "unhealthy",
+                "error": "Database down",
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=True)
+
+        assert isinstance(result, dict)
+        assert result["healthy"] is False
+        assert result["status"] == "unhealthy"
+
+
+def test_health_check_detailed_missing_status_field() -> None:
+    """Test when server response is missing status field."""
+    with patch("httpx.Client.get") as mock_get:
+        # Server returns 200 but response missing 'status' field
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "version": "1.0.0",
+                "schemas_count": 10,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=True)
+
+        assert isinstance(result, dict)
+        # Should be unhealthy since status is not "healthy"
+        assert result["healthy"] is False
 
 
 # ============================================================================

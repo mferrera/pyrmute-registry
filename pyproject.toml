@@ -36,6 +36,7 @@ dependencies = [
 [dependency-groups]
 server = [
     "alembic",
+    "bcrypt",
     "fastapi",
     "jsonschema",
     "psycopg2-binary",
