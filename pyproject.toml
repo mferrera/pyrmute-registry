@@ -62,7 +62,6 @@ docs = [
     "mkdocstrings[python]",
     "griffe-typingdoc",
 ]
-all = ["pyrmute-registry[server,dev,docs]"]
 
 [project.scripts]
 pyrmute-registry = "pyrmute_registry.server.cli:main"
