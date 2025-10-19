@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 def test_health_check_healthy(
     app_client: TestClient,
     sample_schema: dict[str, Any],
+    is_sqlite: bool,
 ) -> None:
     """Test health check returns healthy status."""
     app_client.post(
@@ -32,7 +33,7 @@ def test_health_check_healthy(
     assert data["status"] == "healthy"
     assert data["version"] == "1.0.0"
     assert data["environment"] in ["test", "development"]
-    assert data["database"]["type"] == "sqlite"
+    assert data["database"]["type"] == "sqlite" if is_sqlite else "postgresql"
     assert data["database"]["connected"] is True
     assert data["schemas_count"] >= 1
     assert data["uptime_seconds"] >= 0
@@ -124,15 +125,14 @@ def test_health_check_unexpected_error(
 
 
 def test_health_check_database_type_detection(
-    app_client: TestClient,
+    app_client: TestClient, is_sqlite: bool
 ) -> None:
     """Test that health check correctly identifies database type."""
     response = app_client.get("/health")
 
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
-    # Test database uses SQLite
-    assert data["database"]["type"] == "sqlite"
+    assert data["database"]["type"] == "sqlite" if is_sqlite else "postgresql"
 
 
 def test_liveness_probe(
