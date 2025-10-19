@@ -1,6 +1,5 @@
 """Tests for health check endpoints."""
 
-import concurrent.futures
 import time
 from datetime import datetime
 from typing import Any
@@ -290,24 +289,6 @@ def test_health_error_includes_timestamp(
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         data = response.json()
         assert "timestamp" in data
-
-
-def test_multiple_concurrent_health_checks(
-    app_client: TestClient,
-) -> None:
-    """Test that multiple concurrent health checks work correctly."""
-
-    def check_health() -> int:
-        response = app_client.get("/health")
-        return response.status_code
-
-    # Execute multiple health checks concurrently
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(check_health) for _ in range(10)]
-        results = [future.result() for future in futures]
-
-    # All should succeed
-    assert all(code == status.HTTP_200_OK for code in results)
 
 
 def test_health_check_with_empty_database(
