@@ -561,3 +561,69 @@ def test_audit_log_not_created_for_readiness_probe(
 
     audit_logs = db_session.query(AuditLog).all()
     assert len(audit_logs) == 0
+
+
+def test_audit_middleware_captures_correlation_id(
+    auth_enabled_client: TestClient,
+    db_session: Session,
+    write_key_header: dict[str, str],
+) -> None:
+    """Test that audit middleware captures correlation ID from request state."""
+    db_session.query(AuditLog).delete()
+    db_session.commit()
+
+    custom_correlation_id = "audit-middleware-correlation-123"
+    headers = {**write_key_header, "X-Correlation-ID": custom_correlation_id}
+
+    payload = {
+        "version": "1.0.0",
+        "json_schema": {"type": "object"},
+        "registered_at": "2024-01-01T00:00:00Z",
+        "registered_by": "test-service",
+    }
+    response = auth_enabled_client.post(
+        "/schemas/test-ns/AuditMiddlewareCorrelation/versions",
+        json=payload,
+        headers=headers,
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+
+    audit_logs = db_session.query(AuditLog).all()
+    assert len(audit_logs) == 1
+
+    log = audit_logs[0]
+    assert log.correlation_id == custom_correlation_id
+    assert log.action == "post_schema"
+    assert log.method == "POST"
+
+
+def test_audit_middleware_handles_missing_correlation_id(
+    auth_enabled_client: TestClient,
+    db_session: Session,
+    write_key_header: dict[str, str],
+) -> None:
+    """Test that audit middleware handles requests without correlation ID gracefully."""
+    db_session.query(AuditLog).delete()
+    db_session.commit()
+
+    payload = {
+        "version": "1.0.0",
+        "json_schema": {"type": "object"},
+        "registered_at": "2024-01-01T00:00:00Z",
+        "registered_by": "test-service",
+    }
+    response = auth_enabled_client.post(
+        "/schemas/test-ns/NoCorrelation/versions",
+        json=payload,
+        headers=write_key_header,
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+
+    audit_logs = db_session.query(AuditLog).all()
+    assert len(audit_logs) == 1
+
+    log = audit_logs[0]
+    assert log.correlation_id is not None
+    assert len(log.correlation_id) > 0

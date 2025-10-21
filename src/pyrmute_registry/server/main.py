@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .config import get_settings
 from .db import init_db
-from .middleware import AuditMiddleware, LoggingMiddleware
+from .middleware import AuditMiddleware, CorrelationIdMiddleware, LoggingMiddleware
 from .routers import api_keys, health, root, schemas
 from .schemas.errors import (
     DatabaseErrorResponse,
@@ -96,6 +96,7 @@ def create_app() -> FastAPI:
         ],
     )
 
+    app.add_middleware(CorrelationIdMiddleware)
     if settings.enable_auth and settings.audit_enabled:
         app.add_middleware(AuditMiddleware)
 
