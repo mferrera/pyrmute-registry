@@ -137,6 +137,13 @@ class AuditLog(Base):
         comment="Error message if the action failed",
     )
 
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+        comment="Request correlation ID for distributed tracing",
+    )
+
     # Table constraints and indexes
     __table_args__ = (
         # Composite index for finding actions by a specific API key

@@ -39,6 +39,7 @@ class AuditService:
         api_key: ApiKey | None = None,
         client_ip: str | None = None,
         user_agent: str | None = None,
+        correlation_id: str | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """Context manager for automatic audit logging of operations.
 
@@ -63,6 +64,7 @@ class AuditService:
             api_key: Authenticated API key.
             client_ip: Client IP address.
             user_agent: Client user agent.
+            correlation_id: Request correlation ID for distributed tracing.
 
         Yields:
             Dictionary for storing operation context (resource_id, response_summary,
@@ -103,6 +105,7 @@ class AuditService:
                     request_params=context.get("request_params"),
                     response_summary=context.get("response_summary"),
                     error_message=context.get("error_message"),
+                    correlation_id=correlation_id,
                 )
             except Exception as audit_error:
                 logger.exception(
@@ -123,6 +126,7 @@ class AuditService:
         request_params: dict[str, Any] | None = None,
         response_summary: dict[str, Any] | None = None,
         error_message: str | None = None,
+        correlation_id: str | None = None,
     ) -> AuditLog | None:
         """Log an authenticated action.
 
@@ -142,6 +146,7 @@ class AuditService:
             request_params: Sanitized request parameters.
             response_summary: Summary of response (avoid sensitive data).
             error_message: Error message if action failed.
+            correlation_id: Request correlation ID for distributed tracing.
 
         Returns:
             Created audit log entry, or None if logging failed.
@@ -165,6 +170,7 @@ class AuditService:
             request_params=sanitized_params,
             response_summary=response_summary,
             error_message=error_message,
+            correlation_id=correlation_id,
         )
 
         self.db.add(audit_entry)

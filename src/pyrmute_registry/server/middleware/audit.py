@@ -88,11 +88,12 @@ class AuditMiddleware(BaseHTTPMiddleware):
             with self._get_db_session(request) as db:
                 audit_service = AuditService(db)
 
-                api_key: ApiKey | None = getattr(request.state, "api_key", None)
-
                 action = self._determine_action(request.method, path)
                 resource_type = self._determine_resource_type(path)
                 resource_id = self._extract_resource_id(path)
+
+                api_key: ApiKey | None = getattr(request.state, "api_key", None)
+                correlation_id = getattr(request.state, "correlation_id", None)
 
                 audit_service.log_action(
                     action=action,
@@ -104,6 +105,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                     status_code=response.status_code,
                     client_ip=client_ip,
                     user_agent=user_agent,
+                    correlation_id=correlation_id,
                 )
 
         except Exception as e:
