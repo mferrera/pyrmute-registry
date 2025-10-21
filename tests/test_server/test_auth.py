@@ -1,9 +1,10 @@
 """Tests for authentication system."""
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -138,10 +139,13 @@ def test_authenticate_api_key_updates_last_used(
 
 
 def test_get_current_api_key_header(
-    db_session: Session, auth_enabled_settings: Settings, sample_api_key: ApiKey
+    db_session: Session,
+    auth_enabled_settings: Settings,
+    sample_api_key: ApiKey,
 ) -> None:
     """Test getting API key from X-API-Key header."""
     result = get_current_api_key(
+        request=MagicMock(),
         settings=auth_enabled_settings,
         db=db_session,
         header_key=sample_api_key._plaintext,  # type: ignore[attr-defined]
@@ -153,7 +157,9 @@ def test_get_current_api_key_header(
 
 
 def test_get_current_api_key_bearer(
-    db_session: Session, auth_enabled_settings: Settings, sample_api_key: ApiKey
+    db_session: Session,
+    auth_enabled_settings: Settings,
+    sample_api_key: ApiKey,
 ) -> None:
     """Test getting API key from Bearer token."""
     bearer_creds = HTTPAuthorizationCredentials(
@@ -161,6 +167,7 @@ def test_get_current_api_key_bearer(
         credentials=sample_api_key._plaintext,  # type: ignore[attr-defined]
     )
     result = get_current_api_key(
+        request=MagicMock(),
         settings=auth_enabled_settings,
         db=db_session,
         header_key=None,
@@ -183,6 +190,7 @@ def test_get_current_api_key_header_precedence(
         credentials=admin_api_key._plaintext,  # type: ignore[attr-defined]
     )
     result = get_current_api_key(
+        request=MagicMock(),
         settings=auth_enabled_settings,
         db=db_session,
         header_key=sample_api_key._plaintext,  # type: ignore[attr-defined]
@@ -194,11 +202,14 @@ def test_get_current_api_key_header_precedence(
 
 
 def test_get_current_api_key_missing_when_auth_enabled(
-    db_session: Session, auth_enabled_settings: Settings
+    db_session: Session,
+    auth_enabled_settings: Settings,
+    request: Request,
 ) -> None:
     """Test that missing API key raises 401 when auth is enabled."""
     with pytest.raises(HTTPException) as exc_info:
         get_current_api_key(
+            request=request,
             settings=auth_enabled_settings,
             db=db_session,
             header_key=None,
@@ -210,11 +221,14 @@ def test_get_current_api_key_missing_when_auth_enabled(
 
 
 def test_get_current_api_key_invalid_when_auth_enabled(
-    db_session: Session, auth_enabled_settings: Settings
+    db_session: Session,
+    auth_enabled_settings: Settings,
+    request: Request,
 ) -> None:
     """Test that invalid API key raises 401 when auth is enabled."""
     with pytest.raises(HTTPException) as exc_info:
         get_current_api_key(
+            request=request,
             settings=auth_enabled_settings,
             db=db_session,
             header_key="invalid-key",
@@ -226,10 +240,13 @@ def test_get_current_api_key_invalid_when_auth_enabled(
 
 
 def test_get_current_api_key_auth_disabled(
-    db_session: Session, auth_disabled_settings: Settings
+    db_session: Session,
+    auth_disabled_settings: Settings,
+    request: Request,
 ) -> None:
     """Test that get_current_api_key returns None when auth is disabled."""
     result = get_current_api_key(
+        request=request,
         settings=auth_disabled_settings,
         db=db_session,
         header_key=None,
@@ -485,6 +502,7 @@ def test_full_auth_flow_read_operation(
     """Test full authentication flow for read operation."""
     # Simulate incoming request with API key
     api_key_obj = get_current_api_key(
+        request=MagicMock(),
         settings=auth_enabled_settings,
         db=db_session,
         header_key=read_only_key._plaintext,  # type: ignore[attr-defined]
@@ -505,6 +523,7 @@ def test_full_auth_flow_write_operation_denied(
     """Test full authentication flow for write operation with read-only key."""
     # Simulate incoming request with API key
     api_key_obj = get_current_api_key(
+        request=MagicMock(),
         settings=auth_enabled_settings,
         db=db_session,
         header_key=read_only_key._plaintext,  # type: ignore[attr-defined]
@@ -527,6 +546,7 @@ def test_full_auth_flow_admin_operation(
     """Test full authentication flow for admin operation."""
     # Simulate incoming request with API key
     api_key_obj = get_current_api_key(
+        request=MagicMock(),
         settings=auth_enabled_settings,
         db=db_session,
         header_key=admin_api_key._plaintext,  # type: ignore[attr-defined]
@@ -540,11 +560,13 @@ def test_full_auth_flow_admin_operation(
 
 
 def test_auth_disabled_bypasses_all_checks(
-    db_session: Session, auth_disabled_settings: Settings
+    db_session: Session,
+    auth_disabled_settings: Settings,
 ) -> None:
     """Test that disabling auth bypasses all security checks."""
     # No API key provided
     api_key_obj = get_current_api_key(
+        request=MagicMock(),
         settings=auth_disabled_settings,
         db=db_session,
         header_key=None,
@@ -572,6 +594,7 @@ def test_delete_permission_includes_write_and_read(
     """Test that DELETE permission includes WRITE and READ."""
     # Authenticate with delete key
     api_key_obj = get_current_api_key(
+        request=MagicMock(),
         settings=auth_enabled_settings,
         db=db_session,
         header_key=delete_permission_key._plaintext,  # type: ignore[attr-defined]

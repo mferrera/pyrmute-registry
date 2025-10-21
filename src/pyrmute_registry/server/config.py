@@ -157,6 +157,30 @@ class Settings(BaseSettings):
         description="Maximum requests per minute per client",
     )
 
+    # Audit logging
+    audit_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable audit logging for authenticated operations. "
+            "Only applies when enable_auth=True. "
+            "Logs all operations matching audit_methods and audit_paths."
+        ),
+    )
+    audit_methods: set[str] = Field(
+        default={"POST", "PUT", "PATCH", "DELETE"},
+        description=(
+            "HTTP methods to audit (comma-separated in env). "
+            "Typically state-changing operations."
+        ),
+    )
+    audit_paths: list[str] = Field(
+        default=["/schemas", "/api-keys"],
+        description=(
+            "Path prefixes to audit (comma-separated in env). "
+            "Any request starting with these paths will be audited."
+        ),
+    )
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
@@ -172,6 +196,36 @@ class Settings(BaseSettings):
         """
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]
+        return v
+
+    @field_validator("audit_methods", mode="before")
+    @classmethod
+    def parse_audit_methods(cls, v: str | set[str]) -> set[str]:
+        """Parse audit methods from string or set.
+
+        Args:
+            v: String or set of HTTP methods.
+
+        Returns:
+            Set of method strings.
+        """
+        if isinstance(v, str):
+            return {method.strip().upper() for method in v.split(",")}
+        return v
+
+    @field_validator("audit_paths", mode="before")
+    @classmethod
+    def parse_audit_paths(cls, v: str | list[str]) -> list[str]:
+        """Parse audit paths from string or list.
+
+        Args:
+            v: String or list of path prefixes.
+
+        Returns:
+            List of path prefix strings.
+        """
+        if isinstance(v, str):
+            return [path.strip() for path in v.split(",")]
         return v
 
     @property
