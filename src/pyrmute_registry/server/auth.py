@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import bcrypt
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -97,6 +97,7 @@ def authenticate_api_key(
 
 
 def get_current_api_key(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     db: Annotated[Session, Depends(get_db)],
     header_key: Annotated[str | None, Security(api_key_header)] = None,
@@ -109,6 +110,7 @@ def get_current_api_key(
     Tries both X-API-Key header and Bearer token.
 
     Args:
+        request: The incoming request.
         settings: Application settings.
         db: Database session.
         header_key: API key from X-API-Key header.
@@ -140,7 +142,6 @@ def get_current_api_key(
         )
 
     key_record = authenticate_api_key(api_key, db)
-
     if not key_record:
         logger.warning("Invalid API key provided")
         raise HTTPException(
@@ -148,6 +149,9 @@ def get_current_api_key(
             detail="Invalid API key",
             headers={"WWW-Authenticate": 'Bearer, ApiKey realm="Registry"'},
         )
+
+    # Attach api key to request state for middleware access
+    request.state.api_key = key_record
 
     return key_record
 

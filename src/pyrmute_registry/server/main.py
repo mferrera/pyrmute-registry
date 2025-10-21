@@ -1,20 +1,19 @@
 """Main pyremute-registry FastAPI application setup and configuration."""
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Self
 
-from fastapi import FastAPI, Request, Response, status
+from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import get_settings
 from .db import init_db
+from .middleware import AuditMiddleware, LoggingMiddleware
 from .routers import api_keys, health, root, schemas
 from .schemas.errors import (
     DatabaseErrorResponse,
@@ -27,36 +26,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-class LoggingMiddleware(BaseHTTPMiddleware):
-    """Middleware to log all requests and responses."""
-
-    async def dispatch(
-        self: Self,
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """Log request and response details.
-
-        Args:
-            request: Incoming request.
-            call_next: Next middleware/handler in chain.
-
-        Returns:
-            Response from handler.
-        """
-        logger.info(f"{request.method} {request.url.path}")
-
-        try:
-            response = await call_next(request)
-            logger.info(f"{request.method} {request.url.path} - {response.status_code}")
-            return response
-        except Exception as e:
-            logger.exception(
-                f"{request.method} {request.url.path} - Error: {e!s}",
-            )
-            raise
 
 
 @asynccontextmanager
@@ -127,7 +96,9 @@ def create_app() -> FastAPI:
         ],
     )
 
-    # Middleware
+    if settings.enable_auth and settings.audit_enabled:
+        app.add_middleware(AuditMiddleware)
+
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     app.add_middleware(
         CORSMiddleware,

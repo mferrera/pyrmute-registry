@@ -9,7 +9,8 @@ TEST_DATABASE_URL = os.environ.get(
 )
 os.environ.setdefault("PYRMUTE_REGISTRY_DATABASE_URL", TEST_DATABASE_URL)
 os.environ.setdefault("PYRMUTE_REGISTRY_ENVIRONMENT", "test")
-os.environ.setdefault("PYRMUTE_REGISTRY_ENABLE_AUTH", "false")
+os.environ.setdefault("PYRMUTE_REGISTRY_ENABLE_AUTH", "true")
+os.environ.setdefault("PYRMUTE_REGISTRY_ENABLE_AUDIT", "true")
 
 # ruff: noqa: E402
 
@@ -117,6 +118,7 @@ def get_test_settings() -> Settings:
     return Settings(
         database_url=TEST_DATABASE_URL,
         enable_auth=False,
+        audit_enabled=False,
         environment="test",
         cors_origins=["*"],
     )
@@ -127,6 +129,7 @@ def get_auth_settings() -> Settings:
     return Settings(
         database_url=TEST_DATABASE_URL,
         enable_auth=True,
+        audit_enabled=True,
         environment="test",
         cors_origins=["*"],
     )
@@ -515,3 +518,11 @@ def write_key_header(db_session: Session, sample_api_key: ApiKey) -> dict[str, s
 def read_key_header(db_session: Session, read_only_key: ApiKey) -> dict[str, str]:
     """Create authentication header with read-only API key."""
     return {"X-API-Key": read_only_key._plaintext}  # type: ignore[attr-defined]
+
+
+@pytest.fixture
+def delete_key_header(
+    db_session: Session, delete_permission_key: ApiKey
+) -> dict[str, str]:
+    """Create authentication header with read-only API key."""
+    return {"X-API-Key": delete_permission_key._plaintext}  # type: ignore[attr-defined]

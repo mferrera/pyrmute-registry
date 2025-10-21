@@ -170,7 +170,7 @@ def test_create_api_key_invalid_permission(
         "/api-keys", json=payload, headers=admin_key_header
     )
 
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 def test_create_api_key_name_too_short(
@@ -187,7 +187,7 @@ def test_create_api_key_name_too_short(
         "/api-keys", json=payload, headers=admin_key_header
     )
 
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 def test_create_api_key_invalid_expiration(
@@ -205,7 +205,7 @@ def test_create_api_key_invalid_expiration(
         "/api-keys", json=payload, headers=admin_key_header
     )
 
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 # =============================================================================
@@ -758,7 +758,7 @@ def test_rotate_api_key_validation_grace_period_too_long(
         headers=admin_key_header,
     )
 
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 def test_rotate_api_key_validation_negative_grace_period(
@@ -777,7 +777,7 @@ def test_rotate_api_key_validation_negative_grace_period(
         headers=admin_key_header,
     )
 
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 def test_rotate_api_key_when_auth_disabled(
