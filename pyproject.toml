@@ -30,7 +30,6 @@ dependencies = [
     "httpx",
     "pydantic",
     "pyrmute",
-    "structlog>=25.4.0",
     "tenacity",
 ]
 
@@ -40,12 +39,27 @@ server = [
     "bcrypt",
     "fastapi",
     "jsonschema",
+    "opentelemetry-api>=1.38.0",
+    "opentelemetry-exporter-otlp>=1.38.0",
+    "opentelemetry-instrumentation-fastapi>=0.59b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.59b0",
+    "opentelemetry-sdk>=1.38.0",
     "psycopg2-binary",
     "pydantic-settings",
     "rich",
     "sqlalchemy",
+    "structlog>=25.4.0",
     "typer",
     "uvicorn[standard]",
+]
+sentry = [
+    "sentry-sdk[fastapi]",
+]
+datadog = [
+    "ddtrace",
+]
+xray = [
+    "aws-xray-sdk",
 ]
 dev = [
     "hypothesis",
