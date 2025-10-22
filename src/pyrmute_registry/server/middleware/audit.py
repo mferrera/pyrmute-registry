@@ -1,7 +1,6 @@
 """Middleware for automatic audit logging of authenticated actions."""
 
 import contextlib
-import logging
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final, Self
@@ -12,12 +11,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from pyrmute_registry.server.config import get_settings
 from pyrmute_registry.server.db import get_db
+from pyrmute_registry.server.logging import get_logger
 from pyrmute_registry.server.services.audit import AuditService
 
 if TYPE_CHECKING:
     from pyrmute_registry.server.models.api_key import ApiKey
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 MIN_SCHEMA_PATH_PARTS: Final[int] = 3
@@ -110,7 +110,11 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             logger.exception(
-                f"Failed to create audit log for {request.method} {path}: {e}"
+                "audit_log_creation_failed",
+                method=request.method,
+                path=path,
+                error=str(e),
+                error_type=type(e).__name__,
             )
 
         return response

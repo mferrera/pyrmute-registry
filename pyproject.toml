@@ -30,6 +30,7 @@ dependencies = [
     "httpx",
     "pydantic",
     "pyrmute",
+    "structlog>=25.4.0",
     "tenacity",
 ]
 
