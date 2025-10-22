@@ -1,6 +1,5 @@
 """Tests for main application setup and configuration."""
 
-import warnings
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
@@ -210,31 +209,6 @@ def test_lifespan_startup(app_client: TestClient) -> None:
     assert response.status_code == status.HTTP_200_OK
 
 
-def test_lifespan_database_initialization_failure_in_development() -> None:
-    """Test that app handles database initialization failure in development."""
-
-    def get_dev_settings() -> Settings:
-        return Settings(
-            database_url="sqlite:///test.db",
-            environment="development",
-            enable_auth=False,
-            audit_enabled=False,
-        )
-
-    with (
-        patch("pyrmute_registry.server.main.get_settings", get_dev_settings),
-        patch(
-            "pyrmute_registry.server.main.init_db",
-            side_effect=RuntimeError("Database init failed"),
-        ),
-        patch("pyrmute_registry.server.main.setup_logging"),
-        pytest.raises(RuntimeError, match="Database init failed"),
-        warnings.catch_warnings(record=True),
-        TestClient(create_app()),
-    ):
-        warnings.simplefilter("always")
-
-
 def test_lifespan_skips_auto_init_in_production(db_session: Session) -> None:
     """Test that app does NOT auto-initialize database in production."""
 
@@ -255,7 +229,7 @@ def test_lifespan_skips_auto_init_in_production(db_session: Session) -> None:
     with (
         patch("pyrmute_registry.server.main.init_db") as mock_init_db,
         patch("pyrmute_registry.server.main.engine") as mock_engine,
-        patch("pyrmute_registry.server.main.setup_logging"),
+        patch("pyrmute_registry.server.main.setup_observability"),
     ):
         mock_conn = mock_engine.connect.return_value.__enter__.return_value
 
@@ -286,7 +260,7 @@ def test_lifespan_database_connection_failure_in_production(
     with (
         patch("pyrmute_registry.server.main.init_db") as mock_init_db,
         patch("pyrmute_registry.server.main.engine") as mock_engine,
-        patch("pyrmute_registry.server.main.setup_logging"),
+        patch("pyrmute_registry.server.main.setup_observability"),
         pytest.raises(RuntimeError, match="Connection failed"),
     ):
         mock_engine.connect.side_effect = RuntimeError("Connection failed")

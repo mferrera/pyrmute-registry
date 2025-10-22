@@ -190,6 +190,34 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Sentry Error Tracking
+    sentry_dsn: str | None = Field(
+        default=None,
+        description="Sentry DSN for error tracking (optional)",
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Sentry traces sample rate (0.0 to 1.0)",
+    )
+    sentry_profiles_sample_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Sentry profiling sample rate (0.0 to 1.0)",
+    )
+
+    # OpenTelemetry Tracing
+    otel_enabled: bool = Field(
+        default=False,
+        description="Enable OpenTelemetry distributed tracing",
+    )
+    otel_exporter_otlp_endpoint: str | None = Field(
+        default=None,
+        description="OTLP exporter endpoint (e.g., http://localhost:4317)",
+    )
+
     @property
     def should_log_requests(self) -> bool:
         """Determine if request logging should be enabled."""

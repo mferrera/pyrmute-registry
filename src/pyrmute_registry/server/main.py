@@ -10,15 +10,16 @@ from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from .config import get_settings
+from .config import Settings, get_settings
 from .db import engine, init_db
 from .exception_handlers import (
     general_exception_handler,
     sqlalchemy_exception_handler,
     validation_exception_handler,
 )
-from .logging import get_logger, setup_logging
+from .logging import get_logger
 from .middleware import AuditMiddleware, CorrelationIdMiddleware, LoggingMiddleware
+from .observability import setup_observability
 from .routers import api_keys, health, root, schemas
 
 logger = get_logger(__name__)
@@ -35,7 +36,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         None - control during application lifetime.
     """
     settings = get_settings()
-    setup_logging(settings)
+
+    setup_observability(settings, app)
 
     logger.info(
         "starting_application",
@@ -66,6 +68,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     logger.info("shutting_down_application", app_name=settings.app_name)
+
+    await shutdown_observability(settings)
+
+
+async def shutdown_observability(settings: Settings) -> None:
+    """Cleanup observability integrations on shutdown.
+
+    Args:
+        settings: Application settings.
+    """
+    # Flush Sentry events
+    if settings.sentry_dsn:
+        try:
+            import sentry_sdk  # noqa: PLC0415
+
+            sentry_sdk.flush(timeout=2.0)
+            logger.info("sentry_flushed")
+        except Exception as e:
+            logger.exception("sentry_flush_failed", error=str(e))
+
+    # Shutdown OpenTelemetry
+    if settings.otel_enabled:
+        try:
+            from opentelemetry import trace  # noqa: PLC0415
+
+            provider = trace.get_tracer_provider()
+            if hasattr(provider, "shutdown"):
+                provider.shutdown()
+            logger.info("opentelemetry_shutdown")
+        except Exception as e:
+            logger.exception("opentelemetry_shutdown_failed", error=str(e))
 
 
 def create_app() -> FastAPI:

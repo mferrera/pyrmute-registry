@@ -1,15 +1,46 @@
 """Centralized logging configuration with structlog."""
 
+import contextlib
 import logging
 import sys
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping, MutableMapping
+from typing import TYPE_CHECKING, Any, Self
 
 import structlog
+from opentelemetry import trace
 
 from .config import Settings
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+class OpenTelemetryProcessor:
+    """Structlog processor to add OpenTelemetry trace context."""
+
+    def __call__(
+        self: Self,
+        logger: Any,
+        method_name: str,
+        event_dict: MutableMapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Add trace context to log events.
+
+        Args:
+            logger: Logger instance.
+            method_name: Log method name.
+            event_dict: Log event dictionary.
+
+        Returns:
+            Modified event dictionary with trace context.
+        """
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            span_context = span.get_span_context()
+            event_dict["trace_id"] = format(span_context.trace_id, "032x")
+            event_dict["span_id"] = format(span_context.span_id, "016x")
+
+        return event_dict
 
 
 def setup_logging(settings: Settings) -> None:
@@ -40,6 +71,9 @@ def setup_logging(settings: Settings) -> None:
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
     ]
+
+    with contextlib.suppress(ImportError):
+        processors.append(OpenTelemetryProcessor())
 
     if settings.log_format == "json" or settings.is_production:
         processors += [
