@@ -1,16 +1,16 @@
 """Business logic for audit logging operations."""
 
-import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any, Self
 
 from sqlalchemy.orm import Session
 
+from pyrmute_registry.server.logging import get_logger
 from pyrmute_registry.server.models.api_key import ApiKey
 from pyrmute_registry.server.models.audit_log import AuditLog
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class AuditService:
@@ -109,7 +109,13 @@ class AuditService:
                 )
             except Exception as audit_error:
                 logger.exception(
-                    f"Failed to create audit log: {audit_error}",
+                    "audit_log_operation_failed",
+                    action=action,
+                    resource_type=resource_type,
+                    method=method,
+                    path=path,
+                    error=str(audit_error),
+                    error_type=type(audit_error).__name__,
                 )
 
     def log_action(  # noqa: PLR0913
@@ -177,11 +183,30 @@ class AuditService:
         try:
             self.db.commit()
             self.db.refresh(audit_entry)
-            logger.debug(f"Audit log created: {audit_entry}")
+
+            logger.debug(
+                "audit_log_created",
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                api_key_name=api_key.name if api_key else None,
+                status_code=status_code,
+            )
+
             return audit_entry
         except Exception as e:
             self.db.rollback()
-            logger.exception(f"Failed to create audit log: {e}")
+
+            logger.exception(
+                "audit_log_save_failed",
+                action=action,
+                resource_type=resource_type,
+                method=method,
+                path=path,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+
             return None
 
     @staticmethod

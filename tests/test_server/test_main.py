@@ -1,13 +1,19 @@
 """Tests for main application setup and configuration."""
 
+import warnings
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
+from pyrmute_registry.server.config import Settings, get_settings
+from pyrmute_registry.server.db import get_db
 from pyrmute_registry.server.main import create_app
 
 
@@ -204,17 +210,91 @@ def test_lifespan_startup(app_client: TestClient) -> None:
     assert response.status_code == status.HTTP_200_OK
 
 
-def test_lifespan_database_initialization_failure() -> None:
-    """Test that app handles database initialization failure."""
+def test_lifespan_database_initialization_failure_in_development() -> None:
+    """Test that app handles database initialization failure in development."""
+
+    def get_dev_settings() -> Settings:
+        return Settings(
+            database_url="sqlite:///test.db",
+            environment="development",
+            enable_auth=False,
+            audit_enabled=False,
+        )
+
     with (
+        patch("pyrmute_registry.server.main.get_settings", get_dev_settings),
         patch(
             "pyrmute_registry.server.main.init_db",
             side_effect=RuntimeError("Database init failed"),
         ),
-        pytest.raises(RuntimeError),
-        TestClient(create_app()) as client,
+        patch("pyrmute_registry.server.main.setup_logging"),
+        pytest.raises(RuntimeError, match="Database init failed"),
+        warnings.catch_warnings(record=True),
+        TestClient(create_app()),
     ):
-        client.get("/health")
+        warnings.simplefilter("always")
+
+
+def test_lifespan_skips_auto_init_in_production(db_session: Session) -> None:
+    """Test that app does NOT auto-initialize database in production."""
+
+    def get_prod_settings() -> Settings:
+        return Settings(
+            database_url="postgresql://test",
+            environment="production",
+            enable_auth=False,
+            audit_enabled=False,
+        )
+
+    def override_get_db() -> Generator[Session, None, None]:
+        try:
+            yield db_session
+        finally:
+            pass
+
+    with (
+        patch("pyrmute_registry.server.main.init_db") as mock_init_db,
+        patch("pyrmute_registry.server.main.engine") as mock_engine,
+        patch("pyrmute_registry.server.main.setup_logging"),
+    ):
+        mock_conn = mock_engine.connect.return_value.__enter__.return_value
+
+        app = create_app()
+        app.dependency_overrides[get_settings] = get_prod_settings
+        app.dependency_overrides[get_db] = override_get_db
+
+        try:
+            with TestClient(app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200  # noqa: PLR2004
+
+            mock_init_db.assert_not_called()
+
+            mock_engine.connect.assert_called_once()
+            mock_conn.execute.assert_called_once()
+        finally:
+            app.dependency_overrides.clear()
+
+
+def test_lifespan_database_connection_failure_in_production(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Test that app handles database connection failure in production."""
+    monkeypatch.setenv("PYRMUTE_REGISTRY_DATABASE_URL", "postgresql://test")
+    monkeypatch.setenv("PYRMUTE_REGISTRY_ENVIRONMENT", "production")
+
+    with (
+        patch("pyrmute_registry.server.main.init_db") as mock_init_db,
+        patch("pyrmute_registry.server.main.engine") as mock_engine,
+        patch("pyrmute_registry.server.main.setup_logging"),
+        pytest.raises(RuntimeError, match="Connection failed"),
+    ):
+        mock_engine.connect.side_effect = RuntimeError("Connection failed")
+
+        with TestClient(create_app()):
+            pass
+
+        mock_init_db.assert_not_called()
 
 
 def test_error_message_sanitization_in_production(

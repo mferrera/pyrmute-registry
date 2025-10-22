@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from pyrmute_registry.server.auth import hash_api_key
+from pyrmute_registry.server.logging import get_logger
 from pyrmute_registry.server.models.api_key import ApiKey, Permission
 from pyrmute_registry.server.schemas.api_key import (
     ApiKeyCreate,
@@ -19,6 +20,8 @@ from pyrmute_registry.server.schemas.api_key import (
     ApiKeyRotateResponse,
     ApiKeyStatsResponse,
 )
+
+logger = get_logger(__name__)
 
 
 class ApiKeyService:
@@ -51,6 +54,11 @@ class ApiKeyService:
         """
         existing = self.db.query(ApiKey).filter(ApiKey.name == key_data.name).first()
         if existing:
+            logger.warning(
+                "api_key_creation_failed",
+                reason="duplicate_name",
+                key_name=key_data.name,
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"API key with name '{key_data.name}' already exists",
@@ -75,6 +83,15 @@ class ApiKeyService:
         self.db.add(api_key)
         self.db.commit()
         self.db.refresh(api_key)
+
+        logger.info(
+            "api_key_created",
+            key_id=api_key.id,
+            key_name=api_key.name,
+            permission=api_key.permission,
+            created_by=created_by,
+            expires_at=expires_at.isoformat() if expires_at else None,
+        )
 
         response_dict = {
             **ApiKeyResponse.model_validate(api_key, from_attributes=True).model_dump(),
@@ -106,6 +123,13 @@ class ApiKeyService:
 
         keys = query.order_by(ApiKey.created_at.desc()).all()
 
+        logger.debug(
+            "api_keys_listed",
+            total_keys=len(keys),
+            include_revoked=include_revoked,
+            permission_filter=permission.value if permission else None,
+        )
+
         return ApiKeyListResponse(
             keys=[ApiKeyResponse.model_validate(key) for key in keys],
             total=len(keys),
@@ -135,6 +159,14 @@ class ApiKeyService:
             if key.permission in by_permission:
                 by_permission[key.permission] += 1
 
+        logger.debug(
+            "api_key_stats_retrieved",
+            total_keys=total,
+            active_keys=active,
+            revoked_keys=revoked,
+            expired_keys=expired,
+        )
+
         return ApiKeyStatsResponse(
             total_keys=total,
             active_keys=active,
@@ -158,10 +190,13 @@ class ApiKeyService:
         key = self.db.query(ApiKey).filter(ApiKey.id == key_id).first()
 
         if not key:
+            logger.warning("api_key_not_found", key_id=key_id)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"API key with ID {key_id} not found",
             )
+
+        logger.debug("api_key_retrieved", key_id=key_id, key_name=key.name)
 
         return ApiKeyResponse.model_validate(key)
 
@@ -185,12 +220,21 @@ class ApiKeyService:
         key = self.db.query(ApiKey).filter(ApiKey.id == key_id).first()
 
         if not key:
+            logger.warning(
+                "api_key_revocation_failed", reason="not_found", key_id=key_id
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"API key with ID {key_id} not found",
             )
 
         if key.revoked:
+            logger.warning(
+                "api_key_revocation_failed",
+                reason="already_revoked",
+                key_id=key_id,
+                key_name=key.name,
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"API key '{key.name}' is already revoked",
@@ -209,6 +253,14 @@ class ApiKeyService:
         self.db.commit()
         self.db.refresh(key)
 
+        logger.info(
+            "api_key_revoked",
+            key_id=key.id,
+            key_name=key.name,
+            revoked_by=revoke_data.revoked_by,
+            reason=revoke_data.reason,
+        )
+
         return ApiKeyResponse.model_validate(key)
 
     def delete_api_key(self: Self, key_id: int) -> bool:
@@ -226,17 +278,26 @@ class ApiKeyService:
         key = self.db.query(ApiKey).filter(ApiKey.id == key_id).first()
 
         if not key:
+            logger.warning("api_key_deletion_failed", reason="not_found", key_id=key_id)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"API key with ID {key_id} not found",
             )
 
+        key_name = key.name
+        key_permission = key.permission
+
         self.db.delete(key)
         self.db.commit()
 
-        return True
+        logger.info(
+            "api_key_deleted",
+            key_id=key_id,
+            key_name=key_name,
+            permission=key_permission,
+        )
 
-    # Add this method to the ApiKeyService class:
+        return True
 
     def rotate_api_key(
         self: Self,
@@ -260,12 +321,19 @@ class ApiKeyService:
         # Get existing key
         old_key = self.db.query(ApiKey).filter(ApiKey.id == key_id).first()
         if not old_key:
+            logger.warning("api_key_rotation_failed", reason="not_found", key_id=key_id)
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"API key with ID {key_id} not found",
             )
 
         if old_key.revoked:
+            logger.warning(
+                "api_key_rotation_failed",
+                reason="already_revoked",
+                key_id=key_id,
+                key_name=old_key.name,
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot rotate revoked key '{old_key.name}'",
@@ -312,6 +380,18 @@ class ApiKeyService:
                 f"New key created. Old key will remain active until "
                 f"{grace_period_ends_at.isoformat()}"
             )
+
+            logger.info(
+                "api_key_rotated",
+                old_key_id=old_key.id,
+                old_key_name=old_key.name,
+                new_key_id=new_key.id,
+                new_key_name=new_key.name,
+                grace_period_hours=rotation_data.grace_period_hours,
+                grace_period_ends_at=grace_period_ends_at.isoformat(),
+                rotated_by=rotated_by,
+                reason=rotation_data.reason,
+            )
         else:
             # Immediate revocation
             old_key.revoked = True
@@ -326,6 +406,17 @@ class ApiKeyService:
                 ).strip()
 
             message = "New key created. Old key immediately revoked."
+
+            logger.info(
+                "api_key_rotated",
+                old_key_id=old_key.id,
+                old_key_name=old_key.name,
+                new_key_id=new_key.id,
+                new_key_name=new_key.name,
+                immediate_revocation=True,
+                rotated_by=rotated_by,
+                reason=rotation_data.reason,
+            )
 
         self.db.commit()
         self.db.refresh(old_key)

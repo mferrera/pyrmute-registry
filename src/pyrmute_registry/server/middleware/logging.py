@@ -1,13 +1,15 @@
 """Middleware for request logging with correlation ID support."""
 
-import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Self
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-logger = logging.getLogger(__name__)
+from pyrmute_registry.server.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -27,25 +29,36 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         Returns:
             Response from handler.
         """
-        correlation_id = getattr(request.state, "correlation_id", None)
+        start_time = time.time()
 
         logger.info(
-            f"[{correlation_id}] {request.method} {request.url.path}",
-            extra={"correlation_id": correlation_id},
+            "request_started",
+            method=request.method,
+            path=request.url.path,
+            query_params=str(request.query_params) if request.query_params else None,
+            client_ip=request.client.host if request.client else None,
         )
 
         try:
             response = await call_next(request)
+            duration = time.time() - start_time
+
             logger.info(
-                f"[{correlation_id}] {request.method} {request.url.path} - "
-                f"{response.status_code}",
-                extra={"correlation_id": correlation_id},
+                "request_completed",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=round(duration * 1000, 2),
             )
             return response
         except Exception as e:
+            duration = time.time() - start_time
             logger.exception(
-                f"[{correlation_id}] {request.method} {request.url.path} - "
-                f"Error: {e!s}",
-                extra={"correlation_id": correlation_id},
+                "request_failed",
+                method=request.method,
+                path=request.url.path,
+                error=str(e),
+                error_type=type(e).__name__,
+                duration_ms=round(duration * 1000, 2),
             )
             raise

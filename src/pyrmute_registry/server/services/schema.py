@@ -12,6 +12,7 @@ from jsonschema import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from pyrmute_registry.server.logging import get_logger
 from pyrmute_registry.server.models.schema import SchemaRecord
 from pyrmute_registry.server.schemas.schema import (
     ComparisonResponse,
@@ -21,6 +22,8 @@ from pyrmute_registry.server.schemas.schema import (
     SchemaResponse,
 )
 from pyrmute_registry.server.utils.versioning import parse_version
+
+logger = get_logger(__name__)
 
 
 def _parse_iso_datetime(dt_str: str) -> datetime:
@@ -67,11 +70,27 @@ class SchemaService:
         try:
             Draft202012Validator.check_schema(schema_data.json_schema)
         except SchemaError as e:
+            logger.warning(
+                "schema_validation_failed",
+                namespace=namespace,
+                model_name=model_name,
+                version=schema_data.version,
+                error_type="schema_error",
+                error=str(e).split(chr(10))[0],
+            )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid JSON Schema: {str(e).split(chr(10))[0]}",
             ) from e
         except JsonSchemaValidationError as e:
+            logger.warning(
+                "schema_validation_failed",
+                namespace=namespace,
+                model_name=model_name,
+                version=schema_data.version,
+                error_type="validation_error",
+                error=e.message,
+            )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid JSON Schema: {e.message}",
@@ -89,6 +108,14 @@ class SchemaService:
 
         if existing and not allow_overwrite:
             identifier = existing.full_identifier
+            logger.warning(
+                "schema_registration_failed",
+                reason="already_exists",
+                namespace=namespace,
+                model_name=model_name,
+                version=schema_data.version,
+                identifier=identifier,
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -105,6 +132,7 @@ class SchemaService:
             existing.registered_by = schema_data.registered_by
             existing.meta = schema_data.meta
             record = existing
+            operation = "updated"
         else:
             record = SchemaRecord(
                 namespace=namespace,
@@ -116,12 +144,32 @@ class SchemaService:
                 meta=schema_data.meta,
             )
             self.db.add(record)
+            operation = "created"
 
         try:
             self.db.commit()
             self.db.refresh(record)
+
+            logger.info(
+                "schema_registered",
+                operation=operation,
+                namespace=namespace,
+                model_name=model_name,
+                version=schema_data.version,
+                schema_id=record.id,
+                identifier=record.full_identifier,
+                registered_by=schema_data.registered_by,
+            )
         except IntegrityError as e:
             self.db.rollback()
+            logger.error(
+                "schema_registration_failed",
+                reason="integrity_error",
+                namespace=namespace,
+                model_name=model_name,
+                version=schema_data.version,
+                error=str(e),
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Schema conflict: {e!s}",
@@ -161,10 +209,26 @@ class SchemaService:
             else:
                 identifier = f"{model_name}@{version}"
 
+            logger.debug(
+                "schema_not_found",
+                namespace=namespace,
+                model_name=model_name,
+                version=version,
+                identifier=identifier,
+            )
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Schema {identifier} not found",
             )
+
+        logger.debug(
+            "schema_retrieved",
+            namespace=namespace,
+            model_name=model_name,
+            version=version,
+            schema_id=record.id,
+        )
 
         return self._record_to_response(record)
 
@@ -194,12 +258,28 @@ class SchemaService:
 
         if not records:
             identifier = f"{namespace}::{model_name}" if namespace else model_name
+            logger.debug(
+                "model_not_found",
+                namespace=namespace,
+                model_name=model_name,
+                identifier=identifier,
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Model {identifier} not found",
             )
 
         latest = max(records, key=lambda r: parse_version(r.version))
+
+        logger.debug(
+            "latest_schema_retrieved",
+            namespace=namespace,
+            model_name=model_name,
+            version=latest.version,
+            schema_id=latest.id,
+            total_versions=len(records),
+        )
+
         return self._record_to_response(latest)
 
     def list_versions(
@@ -228,6 +308,12 @@ class SchemaService:
 
         if not records:
             identifier = f"{namespace}::{model_name}" if namespace else model_name
+            logger.debug(
+                "model_not_found",
+                namespace=namespace,
+                model_name=model_name,
+                identifier=identifier,
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Model {identifier} not found",
@@ -236,6 +322,13 @@ class SchemaService:
         versions = sorted(
             [r.version for r in records],
             key=parse_version,
+        )
+
+        logger.debug(
+            "versions_listed",
+            namespace=namespace,
+            model_name=model_name,
+            version_count=len(versions),
         )
 
         return {"versions": versions}
@@ -266,17 +359,11 @@ class SchemaService:
         query = self.db.query(SchemaRecord)
 
         # Filter by namespace if specified
-        # namespace=None means "all namespaces" (no filter)
-        # namespace="" or "null" means "global schemas only"
-        # namespace="service-name" means "specific namespace"
         if namespace is not None:
             if namespace in ("", "null"):
-                # Filter for global schemas only
                 query = query.filter(SchemaRecord.namespace.is_(None))
             else:
-                # Filter for specific namespace
                 query = query.filter(SchemaRecord.namespace == namespace)
-        # If namespace is None, don't apply any namespace filter (list all)
 
         # Filter by model name if specified
         if model_name:
@@ -323,6 +410,17 @@ class SchemaService:
                 )
             )
 
+        logger.debug(
+            "schemas_listed",
+            namespace_filter=namespace,
+            model_name_filter=model_name,
+            include_deprecated=include_deprecated,
+            total_models=len(schema_items),
+            total_schemas=total_count,
+            limit=limit,
+            offset=offset,
+        )
+
         return SchemaListResponse(
             schemas=schema_items,
             total=len(schema_items),
@@ -347,6 +445,10 @@ class SchemaService:
         )
 
         if not records:
+            logger.debug(
+                "model_not_found_in_any_namespace",
+                model_name=model_name,
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Model {model_name} not found in any namespace",
@@ -363,6 +465,12 @@ class SchemaService:
         # Sort versions within each namespace
         for ns, versions in namespaces.items():
             namespaces[ns] = sorted(versions, key=parse_version)
+
+        logger.debug(
+            "namespaces_listed_for_model",
+            model_name=model_name,
+            namespace_count=len(namespaces),
+        )
 
         return {"namespaces": namespaces}
 
@@ -413,6 +521,14 @@ class SchemaService:
                 if namespace
                 else f"{model_name}@{from_version}"
             )
+            logger.debug(
+                "schema_comparison_failed",
+                reason="from_version_not_found",
+                namespace=namespace,
+                model_name=model_name,
+                from_version=from_version,
+                to_version=to_version,
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Schema {identifier} not found",
@@ -424,12 +540,30 @@ class SchemaService:
                 if namespace
                 else f"{model_name}@{to_version}"
             )
+            logger.debug(
+                "schema_comparison_failed",
+                reason="to_version_not_found",
+                namespace=namespace,
+                model_name=model_name,
+                from_version=from_version,
+                to_version=to_version,
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Schema {identifier} not found",
             )
 
         changes = self._compare_schemas(from_record.json_schema, to_record.json_schema)
+
+        logger.info(
+            "schemas_compared",
+            namespace=namespace,
+            model_name=model_name,
+            from_version=from_version,
+            to_version=to_version,
+            compatibility=changes["compatibility"],
+            has_breaking_changes=len(changes["breaking_changes"]) > 0,
+        )
 
         return ComparisonResponse(
             namespace=namespace,
@@ -472,13 +606,16 @@ class SchemaService:
 
         if not record:
             identifier = (
-                record.full_identifier
-                if record
-                else (
-                    f"{namespace}::{model_name}@{version}"
-                    if namespace
-                    else f"{model_name}@{version}"
-                )
+                f"{namespace}::{model_name}@{version}"
+                if namespace
+                else f"{model_name}@{version}"
+            )
+            logger.warning(
+                "schema_deletion_failed",
+                reason="not_found",
+                namespace=namespace,
+                model_name=model_name,
+                version=version,
             )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -486,13 +623,33 @@ class SchemaService:
             )
 
         if not force:
+            logger.warning(
+                "schema_deletion_failed",
+                reason="force_required",
+                namespace=namespace,
+                model_name=model_name,
+                version=version,
+                schema_id=record.id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Deletion requires force=true parameter",
             )
 
+        schema_id = record.id
+        identifier = record.full_identifier
+
         self.db.delete(record)
         self.db.commit()
+
+        logger.info(
+            "schema_deleted",
+            namespace=namespace,
+            model_name=model_name,
+            version=version,
+            schema_id=schema_id,
+            identifier=identifier,
+        )
 
         return True
 
@@ -533,6 +690,13 @@ class SchemaService:
                 if namespace
                 else f"{model_name}@{version}"
             )
+            logger.warning(
+                "schema_deprecation_failed",
+                reason="not_found",
+                namespace=namespace,
+                model_name=model_name,
+                version=version,
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Schema {identifier} not found",
@@ -545,6 +709,16 @@ class SchemaService:
         self.db.commit()
         self.db.refresh(record)
 
+        logger.info(
+            "schema_deprecated",
+            namespace=namespace,
+            model_name=model_name,
+            version=version,
+            schema_id=record.id,
+            identifier=record.full_identifier,
+            message=message,
+        )
+
         return self._record_to_response(record)
 
     def get_schema_count(self: Self) -> int:
@@ -553,7 +727,9 @@ class SchemaService:
         Returns:
             Number of schemas.
         """
-        return self.db.query(SchemaRecord).count()
+        count = self.db.query(SchemaRecord).count()
+        logger.debug("schema_count_retrieved", count=count)
+        return count
 
     @staticmethod
     def _record_to_response(record: SchemaRecord) -> SchemaResponse:

@@ -146,6 +146,15 @@ class Settings(BaseSettings):
         description="Logging level",
     )
 
+    log_format: Literal["json", "console"] = Field(
+        default="console",
+        description="Log output format (json for production, console for dev)",
+    )
+    enable_request_logging: bool = Field(
+        default=True,
+        description="Enable request/response logging middleware",
+    )
+
     # Rate limiting
     rate_limit_enabled: bool = Field(
         default=False,
@@ -180,6 +189,11 @@ class Settings(BaseSettings):
             "Any request starting with these paths will be audited."
         ),
     )
+
+    @property
+    def should_log_requests(self) -> bool:
+        """Determine if request logging should be enabled."""
+        return self.enable_request_logging
 
     @field_validator("cors_origins", mode="before")
     @classmethod
