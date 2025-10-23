@@ -1703,7 +1703,6 @@ def test_metadata_preserved_through_operations(
         meta=metadata,
     )
 
-    # Register
     registered = schema_service.register_schema(
         namespace="auth-service",
         model_name="User",
@@ -1711,7 +1710,6 @@ def test_metadata_preserved_through_operations(
     )
     assert registered.meta == metadata
 
-    # Deprecate
     deprecated = schema_service.deprecate_schema(
         namespace="auth-service",
         model_name="User",
@@ -1790,7 +1788,6 @@ def test_empty_required_list_handling(
         ),
     )
 
-    # Should not raise an error
     response = schema_service.compare_versions(
         namespace="auth-service",
         model_name="User",
@@ -1799,3 +1796,819 @@ def test_empty_required_list_handling(
     )
 
     assert response.changes["compatibility"] == "identical"
+
+
+# ============================================================================
+# AVRO REGISTRATION TESTS
+# ============================================================================
+
+
+def test_register_schema_with_avro(
+    schema_service: SchemaService,
+    sample_schema_data_with_avro: SchemaCreate,
+) -> None:
+    """Test registering a schema with both JSON Schema and Avro."""
+    response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=sample_schema_data_with_avro,
+    )
+
+    assert response.namespace == "auth-service"
+    assert response.model_name == "User"
+    assert response.version == "1.0.0"
+    assert response.avro_schema is not None
+    assert response.avro_schema["type"] == "record"
+    assert response.avro_schema["name"] == "User"
+
+
+def test_register_schema_without_avro(
+    schema_service: SchemaService,
+    sample_schema_data: SchemaCreate,
+) -> None:
+    """Test that schemas without Avro work as before."""
+    response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=sample_schema_data,
+    )
+
+    assert response.avro_schema is None
+
+
+def test_register_schema_avro_validation_invalid_type(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that Avro schema with invalid type is rejected."""
+    invalid_avro = {
+        "type": "string",  # Should be "record"
+        "name": "User",
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=invalid_avro,
+        registered_by="test-service",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        schema_service.register_schema(
+            namespace="auth-service",
+            model_name="User",
+            schema_data=schema_data,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert "Avro schema" in exc_info.value.detail
+
+
+def test_register_schema_avro_validation_missing_name(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that Avro schema without name is rejected."""
+    invalid_avro = {
+        "type": "record",
+        # Missing "name"
+        "fields": [{"name": "id", "type": "string"}],
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=invalid_avro,
+        registered_by="test-service",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        schema_service.register_schema(
+            namespace="auth-service",
+            model_name="User",
+            schema_data=schema_data,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert "name" in exc_info.value.detail.lower()
+
+
+def test_register_schema_avro_validation_missing_fields(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that Avro schema without fields is rejected."""
+    invalid_avro = {
+        "type": "record",
+        "name": "User",
+        # Missing "fields"
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=invalid_avro,
+        registered_by="test-service",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        schema_service.register_schema(
+            namespace="auth-service",
+            model_name="User",
+            schema_data=schema_data,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert "fields" in exc_info.value.detail.lower()
+
+
+def test_register_schema_avro_validation_empty_fields(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that Avro schema with empty fields array is rejected."""
+    invalid_avro = {
+        "type": "record",
+        "name": "User",
+        "fields": [],  # Empty fields
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=invalid_avro,
+        registered_by="test-service",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        schema_service.register_schema(
+            namespace="auth-service",
+            model_name="User",
+            schema_data=schema_data,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+def test_register_schema_avro_with_complex_types(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test registering Avro schema with complex types."""
+    avro_schema = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.example",
+        "fields": [
+            {"name": "id", "type": "string"},
+            {
+                "name": "addresses",
+                "type": {
+                    "type": "array",
+                    "items": {
+                        "type": "record",
+                        "name": "Address",
+                        "fields": [
+                            {"name": "street", "type": "string"},
+                            {"name": "city", "type": "string"},
+                        ],
+                    },
+                },
+            },
+        ],
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=avro_schema,
+        registered_by="test-service",
+    )
+
+    response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=schema_data,
+    )
+
+    assert response.avro_schema is not None
+    assert response.avro_schema["fields"][1]["type"]["type"] == "array"
+
+
+def test_register_schema_avro_with_optional_fields(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test registering Avro schema with optional (union) fields."""
+    avro_schema = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.example",
+        "fields": [
+            {"name": "id", "type": "string"},
+            {"name": "email", "type": ["null", "string"], "default": None},
+        ],
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=avro_schema,
+        registered_by="test-service",
+    )
+
+    response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=schema_data,
+    )
+
+    assert response.avro_schema is not None
+    email_field = next(
+        f for f in response.avro_schema["fields"] if f["name"] == "email"
+    )
+    assert isinstance(email_field["type"], list)
+    assert "null" in email_field["type"]
+
+
+# ============================================================================
+# AVRO RETRIEVAL TESTS
+# ============================================================================
+
+
+def test_get_schema_returns_avro(
+    schema_service: SchemaService,
+    sample_schema_data_with_avro: SchemaCreate,
+) -> None:
+    """Test that getting a schema returns Avro if it was registered."""
+    registered = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=sample_schema_data_with_avro,
+    )
+
+    response = schema_service.get_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="1.0.0",
+    )
+
+    assert response.id == registered.id
+    assert response.avro_schema is not None
+    assert response.avro_schema["type"] == "record"
+
+
+def test_get_schema_without_avro(
+    schema_service: SchemaService,
+    sample_schema_data: SchemaCreate,
+) -> None:
+    """Test that getting schema without Avro returns None for avro_schema."""
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=sample_schema_data,
+    )
+
+    response = schema_service.get_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="1.0.0",
+    )
+
+    assert response.avro_schema is None
+
+
+def test_get_latest_schema_with_avro(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+    sample_avro_schema: dict[str, Any],
+) -> None:
+    """Test getting latest schema returns Avro."""
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            registered_by="test-service",
+        ),
+    )
+
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="2.0.0",
+            json_schema=sample_schema,
+            avro_schema=sample_avro_schema,
+            registered_by="test-service",
+        ),
+    )
+
+    response = schema_service.get_latest_schema(
+        namespace="auth-service",
+        model_name="User",
+    )
+
+    assert response.version == "2.0.0"
+    assert response.avro_schema is not None
+
+
+# ============================================================================
+# AVRO OVERWRITE TESTS
+# ============================================================================
+
+
+def test_overwrite_adds_avro_schema(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+    sample_avro_schema: dict[str, Any],
+) -> None:
+    """Test that overwrite can add Avro schema to existing schema."""
+    original = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            registered_by="service-1",
+        ),
+    )
+    assert original.avro_schema is None
+
+    updated = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            avro_schema=sample_avro_schema,
+            registered_by="service-2",
+        ),
+        allow_overwrite=True,
+    )
+
+    assert updated.id == original.id  # Same record
+    assert updated.avro_schema is not None
+    assert updated.avro_schema["type"] == "record"
+
+
+def test_overwrite_removes_avro_schema(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+    sample_avro_schema: dict[str, Any],
+) -> None:
+    """Test that overwrite can remove Avro schema from existing schema."""
+    original = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            avro_schema=sample_avro_schema,
+            registered_by="service-1",
+        ),
+    )
+    assert original.avro_schema is not None
+
+    updated = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            registered_by="service-2",
+        ),
+        allow_overwrite=True,
+    )
+
+    assert updated.id == original.id  # Same record
+    assert updated.avro_schema is None
+
+
+def test_overwrite_updates_avro_schema(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that overwrite can update Avro schema."""
+    avro_v1 = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.example",
+        "fields": [
+            {"name": "id", "type": "string"},
+        ],
+    }
+
+    avro_v2 = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.example",
+        "doc": "Updated documentation",
+        "fields": [
+            {"name": "id", "type": "string"},
+            {"name": "email", "type": "string"},
+        ],
+    }
+
+    original = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            avro_schema=avro_v1,
+            registered_by="service-1",
+        ),
+    )
+    assert len(original.avro_schema["fields"]) == 1  # type: ignore[index]
+
+    updated = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            avro_schema=avro_v2,
+            registered_by="service-2",
+        ),
+        allow_overwrite=True,
+    )
+
+    assert updated.id == original.id  # Same record
+    assert len(updated.avro_schema["fields"]) == 2  # type: ignore[index]
+    assert updated.avro_schema.get("doc") == "Updated documentation"  # type: ignore[union-attr]
+
+
+# ============================================================================
+# AVRO WITH DEPRECATION TESTS
+# ============================================================================
+
+
+def test_deprecated_schema_preserves_avro(
+    schema_service: SchemaService,
+    sample_schema_data_with_avro: SchemaCreate,
+) -> None:
+    """Test that deprecating a schema preserves Avro schema."""
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=sample_schema_data_with_avro,
+    )
+
+    deprecated = schema_service.deprecate_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="1.0.0",
+        message="Old version",
+    )
+
+    assert deprecated.deprecated is True
+    assert deprecated.avro_schema is not None
+    assert deprecated.avro_schema["type"] == "record"
+
+
+# ============================================================================
+# AVRO NAMESPACE PRESERVATION TESTS
+# ============================================================================
+
+
+def test_avro_namespace_preservation(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that Avro namespace is preserved correctly."""
+    avro_schema = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.mycompany.auth",
+        "fields": [
+            {"name": "id", "type": "string"},
+        ],
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=avro_schema,
+        registered_by="test-service",
+    )
+
+    response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=schema_data,
+    )
+
+    assert response.avro_schema["namespace"] == "com.mycompany.auth"  # type: ignore[index]
+
+
+def test_different_avro_namespaces_different_registry_namespaces(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that different registry namespaces can have different Avro namespaces."""
+    avro_auth = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.company.auth",
+        "fields": [{"name": "id", "type": "string"}],
+    }
+
+    avro_billing = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.company.billing",
+        "fields": [{"name": "id", "type": "string"}],
+    }
+
+    auth_response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            avro_schema=avro_auth,
+            registered_by="auth-service",
+        ),
+    )
+
+    billing_response = schema_service.register_schema(
+        namespace="billing-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            avro_schema=avro_billing,
+            registered_by="billing-service",
+        ),
+    )
+
+    assert auth_response.avro_schema["namespace"] == "com.company.auth"  # type: ignore[index]
+    assert billing_response.avro_schema["namespace"] == "com.company.billing"  # type: ignore[index]
+
+
+# ============================================================================
+# AVRO METADATA PRESERVATION TESTS
+# ============================================================================
+
+
+def test_avro_documentation_preserved(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that Avro documentation fields are preserved."""
+    avro_schema = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.example",
+        "doc": "User record with full details",
+        "fields": [
+            {
+                "name": "id",
+                "type": "string",
+                "doc": "Unique identifier",
+            },
+            {
+                "name": "name",
+                "type": "string",
+                "doc": "Full name",
+            },
+        ],
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=avro_schema,
+        registered_by="test-service",
+    )
+
+    response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=schema_data,
+    )
+
+    assert response.avro_schema["doc"] == "User record with full details"  # type: ignore[index]
+    assert response.avro_schema["fields"][0]["doc"] == "Unique identifier"  # type: ignore[index]
+
+
+def test_avro_default_values_preserved(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test that Avro default values are preserved."""
+    avro_schema = {
+        "type": "record",
+        "name": "User",
+        "namespace": "com.example",
+        "fields": [
+            {"name": "id", "type": "string"},
+            {"name": "status", "type": "string", "default": "active"},
+            {"name": "score", "type": "int", "default": 0},
+        ],
+    }
+
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=avro_schema,
+        registered_by="test-service",
+    )
+
+    response = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=schema_data,
+    )
+
+    status_field = next(
+        f
+        for f in response.avro_schema["fields"]  # type: ignore[index]
+        if f["name"] == "status"
+    )
+    score_field = next(
+        f
+        for f in response.avro_schema["fields"]  # type: ignore[index]
+        if f["name"] == "score"
+    )
+
+    assert status_field["default"] == "active"
+    assert score_field["default"] == 0
+
+
+# ============================================================================
+# UPDATE TO EXISTING TEST: test_complete_schema_lifecycle
+# ============================================================================
+
+
+def test_complete_schema_lifecycle_with_avro(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+    sample_avro_schema: dict[str, Any],
+) -> None:
+    """Test complete lifecycle with Avro: register, get, list, deprecate, delete."""
+    schema_data = SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=sample_avro_schema,
+        registered_by="test-service",
+        meta={"lifecycle": "test"},
+    )
+    registered = schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=schema_data,
+    )
+    assert registered.deprecated is False
+    assert registered.avro_schema is not None
+
+    retrieved = schema_service.get_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="1.0.0",
+    )
+    assert retrieved.id == registered.id
+    assert retrieved.avro_schema is not None
+
+    schemas = schema_service.list_schemas(namespace="auth-service")
+    assert len(schemas.schemas) == 1
+
+    deprecated = schema_service.deprecate_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="1.0.0",
+        message="End of life",
+    )
+    assert deprecated.deprecated is True
+    assert deprecated.avro_schema is not None  # Still preserved
+
+    deleted = schema_service.delete_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="1.0.0",
+        force=True,
+    )
+    assert deleted is True
+
+
+# ============================================================================
+# AVRO WITH MULTIPLE VERSIONS
+# ============================================================================
+
+
+def test_multiple_versions_with_different_avro_schemas(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+) -> None:
+    """Test registering multiple versions with different Avro schemas."""
+    avro_v1 = {
+        "type": "record",
+        "name": "UserV1",
+        "namespace": "com.example",
+        "fields": [
+            {"name": "id", "type": "string"},
+        ],
+    }
+
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            avro_schema=avro_v1,
+            registered_by="test-service",
+        ),
+    )
+
+    avro_v2 = {
+        "type": "record",
+        "name": "UserV2",
+        "namespace": "com.example",
+        "fields": [
+            {"name": "id", "type": "string"},
+            {"name": "email", "type": "string"},
+        ],
+    }
+
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="2.0.0",
+            json_schema=sample_schema,
+            avro_schema=avro_v2,
+            registered_by="test-service",
+        ),
+    )
+
+    v1 = schema_service.get_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="1.0.0",
+    )
+    v2 = schema_service.get_schema(
+        namespace="auth-service",
+        model_name="User",
+        version="2.0.0",
+    )
+
+    assert v1.avro_schema["name"] == "UserV1"  # type: ignore[index]
+    assert len(v1.avro_schema["fields"]) == 1  # type: ignore[index]
+
+    assert v2.avro_schema["name"] == "UserV2"  # type: ignore[index]
+    assert len(v2.avro_schema["fields"]) == 2  # type: ignore[index]
+
+
+def test_mix_of_versions_with_and_without_avro(
+    schema_service: SchemaService,
+    sample_schema: dict[str, Any],
+    sample_avro_schema: dict[str, Any],
+) -> None:
+    """Test that some versions can have Avro while others don't."""
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="1.0.0",
+            json_schema=sample_schema,
+            registered_by="test-service",
+        ),
+    )
+
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="2.0.0",
+            json_schema=sample_schema,
+            avro_schema=sample_avro_schema,
+            registered_by="test-service",
+        ),
+    )
+
+    schema_service.register_schema(
+        namespace="auth-service",
+        model_name="User",
+        schema_data=SchemaCreate(
+            version="3.0.0",
+            json_schema=sample_schema,
+            registered_by="test-service",
+        ),
+    )
+
+    v1 = schema_service.get_schema(
+        namespace="auth-service", model_name="User", version="1.0.0"
+    )
+    v2 = schema_service.get_schema(
+        namespace="auth-service", model_name="User", version="2.0.0"
+    )
+    v3 = schema_service.get_schema(
+        namespace="auth-service", model_name="User", version="3.0.0"
+    )
+
+    assert v1.avro_schema is None
+    assert v2.avro_schema is not None
+    assert v3.avro_schema is None

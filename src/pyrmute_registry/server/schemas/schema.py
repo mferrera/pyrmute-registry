@@ -21,6 +21,15 @@ class SchemaCreate(BaseModel):
                     },
                     "required": ["id", "email"],
                 },
+                "avro_schema": {
+                    "type": "record",
+                    "name": "User",
+                    "namespace": "com.example",
+                    "fields": [
+                        {"name": "id", "type": "string"},
+                        {"name": "email", "type": "string"},
+                    ],
+                },
                 "registered_by": "auth-service",
                 "meta": {"environment": "production", "team": "platform"},
             }
@@ -34,7 +43,10 @@ class SchemaCreate(BaseModel):
     )
     json_schema: dict[str, Any] = Field(
         ...,
-        description="JSON Schema definition (must be valid Draft 7 JSON Schema)",
+        description="JSON Schema definition (must be valid Draft 2020-12 JSON Schema)",
+    )
+    avro_schema: dict[str, Any] | None = Field(
+        default=None, description="Optional Avro schema definition"
     )
     registered_at: str = Field(
         default_factory=lambda: datetime.now(UTC).isoformat(),
@@ -71,6 +83,15 @@ class SchemaResponse(BaseModel):
                     },
                     "required": ["id", "email"],
                 },
+                "avro_schema": {
+                    "type": "record",
+                    "name": "User",
+                    "namespace": "com.example",
+                    "fields": [
+                        {"name": "id", "type": "string"},
+                        {"name": "email", "type": "string"},
+                    ],
+                },
                 "registered_at": "2025-01-15T10:30:00Z",
                 "registered_by": "auth-service",
                 "meta": {"environment": "production"},
@@ -83,11 +104,15 @@ class SchemaResponse(BaseModel):
 
     id: int = Field(..., description="Internal database ID")
     namespace: str | None = Field(
-        None, description="Optional namespace for scoping (null for global schemas)"
+        default=None,
+        description="Optional namespace for scoping (null for global schemas)",
     )
     model_name: str = Field(..., description="Model name")
     version: str = Field(..., description="Schema version")
     json_schema: dict[str, Any] = Field(..., description="JSON Schema definition")
+    avro_schema: dict[str, Any] | None = Field(
+        default=None, description="Optional Avro schema definition"
+    )
     registered_at: str = Field(..., description="Registration timestamp (ISO 8601)")
     registered_by: str = Field(..., description="Registering service or user name")
     meta: dict[str, Any] = Field(default_factory=dict, description="Metadata")
