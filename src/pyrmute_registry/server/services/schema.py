@@ -96,6 +96,22 @@ class SchemaService:
                 detail=f"Invalid JSON Schema: {e.message}",
             ) from e
 
+        if schema_data.avro_schema is not None:
+            try:
+                self._validate_avro_schema(schema_data.avro_schema)
+            except ValueError as e:
+                logger.warning(
+                    "avro_schema_validation_failed",
+                    namespace=namespace,
+                    model_name=model_name,
+                    version=schema_data.version,
+                    error=str(e),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Invalid Avro schema: {e!s}",
+                ) from e
+
         existing = (
             self.db.query(SchemaRecord)
             .filter(
@@ -128,6 +144,7 @@ class SchemaService:
 
         if existing:
             existing.json_schema = schema_data.json_schema
+            existing.avro_schema = schema_data.avro_schema
             existing.registered_at = registered_at
             existing.registered_by = schema_data.registered_by
             existing.meta = schema_data.meta
@@ -139,6 +156,7 @@ class SchemaService:
                 model_name=model_name,
                 version=schema_data.version,
                 json_schema=schema_data.json_schema,
+                avro_schema=schema_data.avro_schema,
                 registered_at=registered_at,
                 registered_by=schema_data.registered_by,
                 meta=schema_data.meta,
@@ -150,6 +168,7 @@ class SchemaService:
             self.db.commit()
             self.db.refresh(record)
 
+            has_avro = schema_data.avro_schema is not None
             logger.info(
                 "schema_registered",
                 operation=operation,
@@ -159,6 +178,7 @@ class SchemaService:
                 schema_id=record.id,
                 identifier=record.full_identifier,
                 registered_by=schema_data.registered_by,
+                has_avro=has_avro,
             )
         except IntegrityError as e:
             self.db.rollback()
@@ -741,7 +761,6 @@ class SchemaService:
         Returns:
             Schema response model.
         """
-        # Ensure timezone info. SQLite needs this, for example.
         registered_at = record.registered_at
         if registered_at.tzinfo is None:
             registered_at = registered_at.replace(tzinfo=UTC)
@@ -755,30 +774,39 @@ class SchemaService:
                 deprecated_at = deprecated_at.replace(tzinfo=UTC)
             deprecated_at_str = deprecated_at.isoformat().replace("+00:00", "Z")
 
-        return SchemaResponse(
-            id=record.id,
-            namespace=record.namespace,
-            model_name=record.model_name,
-            version=record.version,
-            json_schema=record.json_schema,
-            registered_at=registered_at_str,
-            registered_by=record.registered_by,
-            meta=record.meta or {},
-            deprecated=record.deprecated,
-            deprecated_at=deprecated_at_str,
-            deprecation_message=record.deprecation_message,
-        )
+        response_data = {
+            "id": record.id,
+            "namespace": record.namespace,
+            "model_name": record.model_name,
+            "version": record.version,
+            "json_schema": record.json_schema,
+            "registered_at": registered_at_str,
+            "registered_by": record.registered_by,
+            "meta": record.meta or {},
+            "deprecated": record.deprecated,
+            "deprecated_at": deprecated_at_str,
+            "deprecation_message": record.deprecation_message,
+        }
+
+        if record.avro_schema is not None:
+            response_data["avro_schema"] = record.avro_schema
+
+        return SchemaResponse.model_validate(response_data)
 
     @staticmethod
-    def _compare_schemas(
+    def _compare_schemas(  # noqa: C901
         schema1: dict[str, Any],
         schema2: dict[str, Any],
+        avro1: dict[str, Any] | None = None,
+        avro2: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compare two JSON schemas and return differences.
 
         Args:
             schema1: First schema.
             schema2: Second schema.
+            avro1: First Avro schema (optional).
+            avro2: Second Avro schema (optional).
 
         Returns:
             Dictionary of changes with breaking change analysis.
@@ -877,4 +905,77 @@ class SchemaService:
         else:
             changes["compatibility"] = "identical"
 
+        if avro1 is not None and avro2 is not None:
+            avro_changes: dict[str, Any] = {
+                "fields_added": [],
+                "fields_removed": [],
+                "fields_modified": [],
+            }
+
+            fields1 = {f["name"]: f for f in avro1.get("fields", [])}
+            fields2 = {f["name"]: f for f in avro2.get("fields", [])}
+
+            avro_changes["fields_added"] = list(
+                set(fields2.keys()) - set(fields1.keys())
+            )
+            avro_changes["fields_removed"] = list(
+                set(fields1.keys()) - set(fields2.keys())
+            )
+
+            # Check for type changes in common fields
+            for field_name in set(fields1.keys()) & set(fields2.keys()):
+                if fields1[field_name]["type"] != fields2[field_name]["type"]:
+                    avro_changes["fields_modified"].append(
+                        {
+                            "field": field_name,
+                            "from": fields1[field_name]["type"],
+                            "to": fields2[field_name]["type"],
+                        }
+                    )
+
+            changes["avro_changes"] = avro_changes
+
         return changes
+
+    @staticmethod
+    def _validate_avro_schema(avro_schema: dict[str, Any]) -> None:  # noqa: C901
+        """Validate an Avro schema structure.
+
+        Args:
+            avro_schema: Avro schema to validate.
+
+        Raises:
+            ValueError: If schema is invalid.
+        """
+        if not isinstance(avro_schema, dict):
+            raise ValueError("Avro schema must be a dictionary")
+
+        schema_type = avro_schema.get("type")
+        if schema_type != "record":
+            raise ValueError(
+                f"Avro schema must be of type 'record', got '{schema_type}'"
+            )
+
+        if "name" not in avro_schema:
+            raise ValueError("Avro schema must have a 'name' field")
+
+        if "fields" not in avro_schema:
+            raise ValueError("Avro schema must have a 'fields' array")
+
+        fields = avro_schema["fields"]
+        if not isinstance(fields, list):
+            raise ValueError("Avro schema 'fields' must be an array")
+
+        if len(fields) == 0:
+            raise ValueError("Avro schema 'fields' array cannot be empty")
+
+        # Validate each field has required properties
+        for i, field in enumerate(fields):
+            if not isinstance(field, dict):
+                raise ValueError(f"Field at index {i} must be a dictionary")
+
+            if "name" not in field:
+                raise ValueError(f"Field at index {i} is missing 'name'")
+
+            if "type" not in field:
+                raise ValueError(f"Field at index {i} is missing 'type'")

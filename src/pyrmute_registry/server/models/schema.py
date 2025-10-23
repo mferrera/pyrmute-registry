@@ -62,6 +62,12 @@ class SchemaRecord(Base):
         comment="JSON Schema definition (Draft 2020-12)",
     )
 
+    avro_schema: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Optional Avro schema definition",
+    )
+
     # Registration metadata
     registered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

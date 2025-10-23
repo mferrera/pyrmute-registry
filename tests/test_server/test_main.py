@@ -250,6 +250,7 @@ def test_lifespan_skips_auto_init_in_production(db_session: Session) -> None:
             app.dependency_overrides.clear()
 
 
+@pytest.mark.filterwarnings("ignore:Remove `format_exc_info`")
 def test_lifespan_database_connection_failure_in_production(
     monkeypatch: MonkeyPatch,
 ) -> None:

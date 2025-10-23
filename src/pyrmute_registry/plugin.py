@@ -5,10 +5,11 @@ import os
 import warnings
 from collections.abc import Callable
 from types import TracebackType
-from typing import Any, Self, TypeAlias, overload
+from typing import Any, Self, TypeAlias, cast, overload
 
 from pydantic import BaseModel, Field
 from pyrmute import ModelManager, ModelVersion
+from pyrmute.avro_types import AvroRecordSchema
 from pyrmute.types import DecoratedBaseModel
 
 from .client import RegistryClient
@@ -18,7 +19,7 @@ from .exceptions import (
     RegistryPluginError,
     SchemaConflictError,
 )
-from .types import JsonSchema
+from .types import JsonSchema, RegistrySchemaResponse
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,10 @@ class RegistryPluginConfig(BaseModel):
             env).
         allow_overwrite: Whether to allow overwriting existing schemas.
         metadata: Default metadata to include with all registrations.
+        include_avro: Whether to generate and register Avro schemas alongside JSON
+            Schema.
+        avro_namespace: Namespace for Avro schemas (e.g., "com.myapp"). Only used if
+            include_avro is True.
     """
 
     registry_url: str | None = Field(
@@ -76,6 +81,14 @@ class RegistryPluginConfig(BaseModel):
         default_factory=dict,
         description="Default metadata for all registrations",
     )
+    include_avro: bool = Field(
+        default=True,
+        description="Generate and register Avro schemas alongside JSON Schema",
+    )
+    avro_namespace: str = Field(
+        default="com.example",
+        description="Namespace for Avro schemas (e.g., 'com.myapp')",
+    )
 
 
 class RegistryPlugin:
@@ -85,10 +98,8 @@ class RegistryPlugin:
     remote registry service whenever models are defined. It provides functionality for
     schema synchronization, comparison, and validation.
 
-    The plugin supports both global and namespaced schemas:
-
-    - Global schemas (namespace=None): Available across all services.
-    - Namespaced schemas: Scoped to specific services for multi-tenant deployments.
+    The plugin supports both global and namespaced schemas, and can optionally generate
+    and register Avro schemas alongside JSON Schema.
 
     Examples:
         Basic usage with auto-registration (namespaced):
@@ -110,6 +121,17 @@ class RegistryPlugin:
             email: str
         ```
 
+        With Avro schema registration:
+        ```python
+        plugin = RegistryPlugin(
+            manager,
+            registry_url="http://localhost:8000",
+            namespace="user-service",
+            include_avro=True,
+            avro_namespace="com.myapp.users",
+        )
+        ```
+
         Global schema registration:
         ```python
         plugin = RegistryPlugin(
@@ -128,6 +150,8 @@ class RegistryPlugin:
             namespace="user-service",
             auto_register=True,
             fail_on_error=False,
+            include_avro=True,
+            avro_namespace="com.myapp",
         )
         plugin = RegistryPlugin(manager, config=config)
         ```
@@ -181,6 +205,8 @@ class RegistryPlugin:
         api_key: str | None = None,
         allow_overwrite: bool = False,
         metadata: dict[str, Any] | None = None,
+        include_avro: bool = True,
+        avro_namespace: str = "com.example",
     ) -> None: ...
 
     def __init__(
@@ -230,113 +256,70 @@ class RegistryPlugin:
                 in the registry. If `True`, registering a schema with an existing
                 model name and version will update the existing entry. If `False`,
                 attempting to register a duplicate will fail. Default is `False`
-                for safety.
+                to prevent accidental overwrites.
             metadata: Default metadata dictionary to include with all schema
-                registrations. This metadata is merged with any model-specific metadata.
-                Useful for adding common information like deployment environment, team
-                ownership, etc. Default is an empty dict.
+                registrations. This metadata will be merged with any model-specific
+                metadata. Useful for tracking deployment info, team ownership, etc.
+                Default is an empty dict.
+            include_avro: Whether to generate and register Avro schemas alongside
+                JSON Schema. If `True`, both schemas will be sent to the registry.
+                Default is `True`.
+            avro_namespace: Namespace for generated Avro schemas (e.g., 'com.myapp').
+                Only used when `include_avro=True`. Default is 'com.example'.
             **kwargs: When config is `None`, accepts any of the individual parameters
                 listed above as keyword arguments. When config is provided, no
                 additional kwargs should be passed.
 
         Raises:
-            RegistryPluginError: If `registry_url` is not provided either as an
-                argument or via the `PYRMUTE_REGISTRY_URL` environment variable.
-            RegistryConnectionError: If `fail_on_error=True` and the registry
-                server is unreachable or returns an unhealthy status.
-            ValueError: If both config and individual keyword arguments are
-                provided simultaneously.
-            TypeError: If unrecognized keyword arguments are provided when
-                initializing without a config object.
+            RegistryPluginError: If configuration is invalid.
+            RegistryConnectionError: If fail_on_error=True and registry is unreachable.
 
         Examples:
-            Initialize with config object (recommended):
+            With config object (recommended):
             ```python
             config = RegistryPluginConfig(
-                registry_url="http://localhost:8000",
-                namespace="user-service",
-                auto_register=True,
-                fail_on_error=False,
+                registry_url="http://registry:8000",
+                namespace="api-service",
+                include_avro=True,
+                avro_namespace="com.mycompany.api",
             )
             plugin = RegistryPlugin(manager, config=config)
             ```
 
-            Initialize with keyword arguments (backwards compatible):
+            With keyword arguments:
             ```python
             plugin = RegistryPlugin(
                 manager,
-                registry_url="http://localhost:8000",
-                namespace="user-service",
-                auto_register=True,
+                registry_url="http://registry:8000",
+                namespace="api-service",
+                include_avro=True,
+                avro_namespace="com.mycompany.api",
             )
             ```
 
-            Initialize as global (no namespace):
+            Without Avro:
             ```python
             plugin = RegistryPlugin(
                 manager,
-                registry_url="http://localhost:8000",
-                namespace=None,  # Global schemas
+                registry_url="http://registry:8000",
+                include_avro=False,
             )
             ```
-
-            Initialize with environment variables:
-            ```python
-            # With PYRMUTE_REGISTRY_URL and PYRMUTE_REGISTRY_NAMESPACE set
-            plugin = RegistryPlugin(manager, auto_register=True)
-            ```
-
-            Initialize for development with custom metadata:
-            ```python
-            plugin = RegistryPlugin(
-                manager,
-                registry_url="https://dev-registry.example.com",
-                namespace="payment-service",
-                verify_ssl=False,  # Dev environment
-                metadata={"environment": "development", "team": "payments"},
-            )
-            ```
-
-            Initialize with authentication:
-            ```python
-            plugin = RegistryPlugin(
-                manager,
-                registry_url="https://registry.example.com",
-                namespace="api-gateway",
-                api_key="secret-key-123",
-                fail_on_error=True,  # Critical service
-            )
-            ```
-
-        Note:
-            The plugin automatically checks connectivity to the registry during
-            initialization. If `fail_on_error=False` and the registry is unavailable, a
-            warning is issued but initialization continues. This allows services to
-            start even if the registry is temporarily down.
         """
-        if config is None:
-            # Validate kwargs match config fields
-            valid_keys = set(RegistryPluginConfig.model_fields.keys())
-            if invalid := set(kwargs) - valid_keys:
-                raise TypeError(
-                    f"__init__() got unexpected keyword argument(s): "
-                    f"{', '.join(sorted(invalid))}"
-                )
-            config = RegistryPluginConfig(**kwargs)
-        elif kwargs:
-            raise ValueError(
-                "Cannot provide both 'config' and keyword arguments. "
-                "Use either the config parameter with a RegistryPluginConfig "
-                "object, or use individual keyword arguments, but not both."
-            )
-
-        self.config = config
         self.manager = manager
+
+        if config is not None:
+            if kwargs:
+                raise RegistryPluginError(
+                    "Cannot provide both config object and keyword arguments"
+                )
+        else:
+            config = RegistryPluginConfig.model_validate(kwargs)
 
         self.registry_url = config.registry_url or os.getenv("PYRMUTE_REGISTRY_URL")
         if not self.registry_url:
             raise RegistryPluginError(
-                "Registry URL must be provided either as argument or "
+                "registry_url must be provided either as argument or "
                 "via PYRMUTE_REGISTRY_URL environment variable"
             )
 
@@ -347,6 +330,10 @@ class RegistryPlugin:
         self.fail_on_error = config.fail_on_error
         self.allow_overwrite = config.allow_overwrite
         self.default_metadata = config.metadata.copy()
+
+        # Avro configuration
+        self.include_avro = config.include_avro
+        self.avro_namespace = config.avro_namespace
 
         api_key = config.api_key or os.getenv("PYRMUTE_REGISTRY_API_KEY")
 
@@ -366,8 +353,13 @@ class RegistryPlugin:
             self._patch_manager()
 
         scope = f"namespace '{self.namespace}'" if self.namespace else "global scope"
+        avro_status = (
+            f" with Avro (namespace={self.avro_namespace})"
+            if self.include_avro
+            else " (JSON only)"
+        )
         logger.info(
-            f"RegistryPlugin initialized for {scope} "
+            f"RegistryPlugin initialized for {scope}{avro_status} "
             f"with registry at {self.registry_url}"
         )
 
@@ -413,6 +405,7 @@ class RegistryPlugin:
         version: str,
         schema: JsonSchema,
         metadata: dict[str, Any] | None = None,
+        avro_schema: AvroRecordSchema | None = None,
     ) -> bool:
         """Safely register a schema with error handling.
 
@@ -421,6 +414,7 @@ class RegistryPlugin:
             version: Model version.
             schema: JSON schema.
             metadata: Optional metadata.
+            avro_schema: Optional Avro schema.
 
         Returns:
             `True` if registration succeeded, `False` otherwise.
@@ -439,13 +433,17 @@ class RegistryPlugin:
                 schema=schema,
                 registered_by=self.namespace or "global",
                 namespace=self.namespace,
+                avro_schema=avro_schema,
                 metadata=full_metadata,
                 allow_overwrite=self.allow_overwrite,
             )
 
             self._registered_models.add(key)
             identifier = f"{self.namespace}::{name}" if self.namespace else name
-            logger.info(f"✓ Registered {identifier} v{version} to registry")
+            schema_types = "JSON+Avro" if avro_schema else "JSON"
+            logger.info(
+                f"✓ Registered {identifier} v{version} ({schema_types}) to registry"
+            )
             return True
 
         except SchemaConflictError as e:
@@ -509,12 +507,31 @@ class RegistryPlugin:
                 try:
                     schema = self.manager.get_schema(name, version_str)
 
+                    avro_schema = None
+                    if self.include_avro:
+                        try:
+                            avro_schema = self.manager.get_avro_schema(
+                                name,
+                                version_str,
+                                namespace=self.avro_namespace,
+                                include_docs=True,
+                            )
+                        except Exception as avro_error:
+                            # Log but don't fail - Avro generation is optional
+                            logger.warning(
+                                f"Failed to generate Avro schema for {name} "
+                                f"v{version_str}: {avro_error}. Continuing "
+                                "with JSON Schema only."
+                            )
+
                     metadata = {
                         "enable_ref": enable_ref,
                         "backward_compatible": backward_compatible,
                     }
 
-                    self.register_schema_safe(name, version_str, schema, metadata)
+                    self.register_schema_safe(
+                        name, version_str, schema, metadata, avro_schema
+                    )
 
                 except Exception as e:
                     msg = (
@@ -595,15 +612,90 @@ class RegistryPlugin:
         for name, version in models:
             try:
                 schema = self.manager.get_schema(name, version)
-                success = self.register_schema_safe(name, version, schema)
+
+                avro_schema = None
+                if self.include_avro:
+                    try:
+                        avro_schema = self.manager.get_avro_schema(
+                            name,
+                            version,
+                            namespace=self.avro_namespace,
+                            include_docs=True,
+                        )
+                    except Exception as avro_error:
+                        logger.warning(
+                            f"Failed to generate Avro schema for {name} v{version}: "
+                            f"{avro_error}. Registering JSON Schema only."
+                        )
+
+                success = self.register_schema_safe(
+                    name, version, schema, None, avro_schema
+                )
                 results[f"{name}@{version}"] = success
             except Exception as e:
-                logger.error(f"Failed to register {name} v{version}: {e}")
-                results[f"{name}@{version}"] = False
+                msg = f"Failed to register {name}@{version}: {e}"
+                logger.error(msg)
                 if self.fail_on_error:
-                    raise
+                    raise RegistryPluginError(msg) from e
+                results[f"{name}@{version}"] = False
 
         return results
+
+    def register_model(
+        self: Self,
+        name: str,
+        version: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Manually register a specific model version.
+
+        Args:
+            name: Model name.
+            version: Model version.
+            metadata: Optional metadata to include with registration.
+
+        Returns:
+            `True` if registration succeeded, `False` otherwise.
+
+        Examples:
+            ```python
+            # Register a specific model
+            success = plugin.register_model("User", "1.0.0")
+
+            # With custom metadata
+            success = plugin.register_model(
+                "User", "1.0.0",
+                metadata={"team": "backend", "priority": "high"}
+        )
+        ```
+        """
+        try:
+            schema = self.manager.get_schema(name, version)
+
+            avro_schema = None
+            if self.include_avro:
+                try:
+                    avro_schema = self.manager.get_avro_schema(
+                        name,
+                        version,
+                        namespace=self.avro_namespace,
+                        include_docs=True,
+                    )
+                except Exception as avro_error:
+                    logger.warning(
+                        f"Failed to generate Avro schema for {name} v{version}: "
+                        f"{avro_error}. Registering JSON Schema only."
+                    )
+
+            return self.register_schema_safe(
+                name, version, schema, metadata, avro_schema
+            )
+        except Exception as e:
+            msg = f"Failed to register {name} v{version}: {e}"
+            logger.error(msg)
+            if self.fail_on_error:
+                raise RegistryPluginError(msg) from e
+            return False
 
     def sync_with_registry(self) -> dict[str, Any]:
         """Synchronize local models with the registry.
@@ -702,7 +794,7 @@ class RegistryPlugin:
         self,
         model_name: str,
         version: str,
-    ) -> dict[str, Any]:
+    ) -> RegistrySchemaResponse:
         """Retrieve a schema from the registry.
 
         Args:
@@ -710,7 +802,8 @@ class RegistryPlugin:
             version: Version string.
 
         Returns:
-            Schema data from registry including metadata and registration info.
+            Schema data from registry including json_schema, optional avro_schema, and
+            metadata.
 
         Raises:
             RegistryPluginError: If retrieval fails.
@@ -719,6 +812,7 @@ class RegistryPlugin:
             ```python
             schema_data = plugin.get_registry_schema("User", "1.0.0")
             print(schema_data["json_schema"])  # The JSON schema
+            print(schema_data.get("avro_schema"))  # The Avro schema (if available)
             print(schema_data["registered_by"])  # Service that registered it
             ```
         """
@@ -772,7 +866,7 @@ class RegistryPlugin:
         try:
             local_schema: dict[str, Any] = self.manager.get_schema(model_name, version)
 
-            registry_data: dict[str, Any] = self.client.get_schema(
+            registry_data = self.client.get_schema(
                 model_name, version, namespace=self.namespace
             )
             registry_schema = registry_data.get("json_schema", {})
@@ -789,7 +883,9 @@ class RegistryPlugin:
 
             if not matches:
                 local_props = set(local_schema.get("properties", {}).keys())
-                registry_props = set(registry_schema.get("properties", {}).keys())
+                registry_props = set(
+                    cast("dict[str, Any]", registry_schema.get("properties", {})).keys()
+                )
 
                 result["differences"] = {
                     "properties_added": list(local_props - registry_props),
@@ -880,6 +976,42 @@ class RegistryPlugin:
         """
         return self._registered_models.copy()
 
+    def sync_all_models(self: Self) -> dict[str, bool]:
+        """Synchronize all local models with registry.
+
+        This is a convenience method that registers all models in the manager.
+
+        Returns:
+            Dict mapping `"name@version"` to registration success status.
+
+        Examples:
+            ```python
+            # Sync everything
+            results = plugin.sync_all_models()
+
+            successful = sum(1 for success in results.values() if success)
+            print(f"Successfully synced {successful}/{len(results)} models")
+            ```
+        """
+        return self.register_existing_models()
+
+    def list_registered_models(self: Self) -> list[tuple[str, str]]:
+        """Get list of models registered in this session.
+
+        Returns:
+            List of `(name, version)` tuples for registered models.
+
+        Examples:
+            ```python
+            registered = plugin.list_registered_models()
+            print(f"Registered {len(registered)} models this session")
+
+            for name, version in registered:
+                print(f"  - {name} v{version}")
+            ```
+        """
+        return list(self._registered_models)
+
     def clear_registration_cache(self) -> None:
         """Clear the cache of registered models.
 
@@ -920,6 +1052,40 @@ class RegistryPlugin:
         self.default_metadata.update(metadata)
         logger.debug(f"Default metadata updated: {self.default_metadata}")
 
+    def set_avro_config(
+        self,
+        include_avro: bool | None = None,
+        avro_namespace: str | None = None,
+    ) -> None:
+        """Update Avro schema configuration.
+
+        Args:
+            include_avro: Whether to include Avro schemas. If None, keeps current
+                setting.
+            avro_namespace: New Avro namespace. If None, keeps current setting.
+
+        Examples:
+            Enable Avro with new namespace:
+            ```python
+            plugin.set_avro_config(
+                include_avro=True,
+                avro_namespace="com.mycompany.newservice"
+            )
+            ```
+
+            Disable Avro:
+            ```python
+            plugin.set_avro_config(include_avro=False)
+            ```
+        """
+        if include_avro is not None:
+            self.include_avro = include_avro
+            logger.debug(f"Avro generation {'enabled' if include_avro else 'disabled'}")
+
+        if avro_namespace is not None:
+            self.avro_namespace = avro_namespace
+            logger.debug(f"Avro namespace set to: {avro_namespace}")
+
     def health_check(self) -> dict[str, Any]:
         """Check health of plugin and registry connection.
 
@@ -931,6 +1097,8 @@ class RegistryPlugin:
             - `registry_url`: Registry URL.
             - `namespace`: Namespace (or None for global).
             - `registered_models`: Count of registered models.
+            - `include_avro`: Whether Avro schemas are being generated.
+            - `avro_namespace`: Avro namespace if applicable.
             - `registry_healthy`: Whether registry is healthy.
             - `registry_details`: Detailed registry health info.
 
@@ -942,6 +1110,7 @@ class RegistryPlugin:
                 print(f"Registry unhealthy: {health.get('registry_error')}")
 
             print(f"Registered {health['registered_models']} models")
+            print(f"Avro enabled: {health['include_avro']}")
             ```
         """
         result: dict[str, Any] = {
@@ -950,6 +1119,8 @@ class RegistryPlugin:
             "registry_url": self.registry_url,
             "namespace": self.namespace,
             "registered_models": len(self._registered_models),
+            "include_avro": self.include_avro,
+            "avro_namespace": self.avro_namespace if self.include_avro else None,
         }
 
         try:
@@ -1028,8 +1199,9 @@ class RegistryPlugin:
             Human-readable string representation of the plugin.
         """
         scope = f"namespace={self.namespace}" if self.namespace else "global"
+        avro_info = f", avro={self.avro_namespace}" if self.include_avro else ""
         return (
-            f"RegistryPlugin({scope}, "
+            f"RegistryPlugin({scope}{avro_info}, "
             f"registry={self.registry_url}, "
             f"registered={len(self._registered_models)})"
         )
@@ -1059,6 +1231,8 @@ def create_plugin(
             - `api_key`: API key for authentication (default: `None`).
             - `allow_overwrite`: Allow overwriting schemas (default: `False`).
             - `metadata`: Default metadata dict (default: `{}`).
+            - `include_avro`: Generate Avro schemas (default: `True`).
+            - `avro_namespace`: Avro namespace (default: `"com.example"`).
 
     Returns:
         Initialized `RegistryPlugin` instance.
@@ -1077,12 +1251,24 @@ def create_plugin(
         )
         ```
 
-        Global schemas:
+        With Avro schemas:
+        ```python
+        plugin = create_plugin(
+            manager,
+            registry_url="http://registry:8000",
+            namespace="api-service",
+            include_avro=True,
+            avro_namespace="com.mycompany.api",
+        )
+        ```
+
+        Global schemas without Avro:
         ```python
         plugin = create_plugin(
             manager,
             registry_url="http://registry:8000",
             namespace=None,  # Global schemas
+            include_avro=False,
         )
         ```
 
@@ -1095,6 +1281,8 @@ def create_plugin(
             fail_on_error=False,
             verify_ssl=True,
             metadata={"team": "platform", "env": "prod"},
+            include_avro=True,
+            avro_namespace="com.mycompany",
         )
         ```
 

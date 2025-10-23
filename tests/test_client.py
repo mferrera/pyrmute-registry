@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import httpx
 import pytest
 from httpx import codes
+from pyrmute import AvroRecordSchema
 
 from pyrmute_registry.client import RegistryClient
 from pyrmute_registry.exceptions import (
@@ -14,31 +15,9 @@ from pyrmute_registry.exceptions import (
     SchemaConflictError,
     SchemaNotFoundError,
 )
+from pyrmute_registry.types import JsonSchema, RegistrySchemaResponse
 
 # ruff: noqa: PLR2004
-
-
-@pytest.fixture
-def sample_schema() -> dict[str, Any]:
-    """Sample JSON schema for testing."""
-    return {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string"},
-            "name": {"type": "string"},
-            "email": {"type": "string", "format": "email"},
-        },
-        "required": ["id", "name"],
-    }
-
-
-@pytest.fixture
-def mock_response() -> Mock:
-    """Create a mock httpx Response."""
-    response = Mock(spec=httpx.Response)
-    response.status_code = codes.OK
-    response.json.return_value = {}
-    return response
 
 
 # ============================================================================
@@ -260,7 +239,7 @@ def test_register_schema_timeout_error(sample_schema: dict[str, Any]) -> None:
 # ============================================================================
 
 
-def test_get_schema_global(sample_schema: dict[str, Any]) -> None:
+def test_get_schema_global() -> None:
     """Test getting a global schema."""
     with patch("httpx.Client.get") as mock_get:
         mock_get.return_value = Mock(
@@ -270,15 +249,21 @@ def test_get_schema_global(sample_schema: dict[str, Any]) -> None:
                 "namespace": None,
                 "model_name": "User",
                 "version": "1.0.0",
-                "json_schema": sample_schema,
+                "json_schema": {"type": "object", "properties": {}},
+                "registered_at": "2024-01-01T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {},
+                "deprecated": False,
             },
         )
 
         client = RegistryClient("http://localhost:8000")
-        result = client.get_schema("User", "1.0.0")
+        response = client.get_schema("User", "1.0.0")
 
-        assert result["model_name"] == "User"
-        assert result["version"] == "1.0.0"
+        assert response["model_name"] == "User"
+        assert response["version"] == "1.0.0"
+        assert "json_schema" in response
+        assert response["json_schema"]["type"] == "object"
 
         # Verify URL
         call_args = mock_get.call_args
@@ -346,8 +331,8 @@ def test_get_schema_connection_error() -> None:
 # ============================================================================
 
 
-def test_get_latest_schema_global(sample_schema: dict[str, Any]) -> None:
-    """Test getting latest global schema."""
+def test_get_latest_schema_global() -> None:
+    """Test getting latest schema."""
     with patch("httpx.Client.get") as mock_get:
         mock_get.return_value = Mock(
             status_code=codes.OK,
@@ -356,18 +341,19 @@ def test_get_latest_schema_global(sample_schema: dict[str, Any]) -> None:
                 "namespace": None,
                 "model_name": "User",
                 "version": "2.0.0",
-                "json_schema": sample_schema,
+                "json_schema": {"type": "object"},
+                "registered_at": "2024-01-02T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {},
+                "deprecated": False,
             },
         )
 
         client = RegistryClient("http://localhost:8000")
-        result = client.get_latest_schema("User")
+        response = client.get_latest_schema("User")
 
-        assert result["version"] == "2.0.0"
-
-        # Verify URL
-        call_args = mock_get.call_args
-        assert call_args[0][0] == "http://localhost:8000/schemas/User/versions/latest"
+        assert response["version"] == "2.0.0"
+        assert "json_schema" in response
 
 
 def test_get_latest_schema_namespaced(sample_schema: dict[str, Any]) -> None:
@@ -412,7 +398,7 @@ def test_get_latest_schema_not_found() -> None:
         with pytest.raises(SchemaNotFoundError) as exc_info:
             client.get_latest_schema("User")
 
-        assert "not found" in str(exc_info.value)
+        assert "No schemas found for User" in str(exc_info.value)
 
 
 # ============================================================================
@@ -1491,13 +1477,12 @@ def test_client_with_api_key_has_correct_header() -> None:
 
 
 def test_full_schema_lifecycle(sample_schema: dict[str, Any]) -> None:
-    """Test complete schema lifecycle: register, get, compare, deprecate, delete."""
+    """Test complete schema lifecycle."""
     with (
         patch("httpx.Client.post") as mock_post,
         patch("httpx.Client.get") as mock_get,
         patch("httpx.Client.delete") as mock_delete,
     ):
-        # Setup mocks
         mock_post.return_value = Mock(
             status_code=codes.CREATED,
             json=lambda: {
@@ -1514,6 +1499,10 @@ def test_full_schema_lifecycle(sample_schema: dict[str, Any]) -> None:
                 "model_name": "User",
                 "version": "1.0.0",
                 "json_schema": sample_schema,
+                "registered_at": "2024-01-01T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {},
+                "deprecated": False,
             },
         )
         mock_delete.return_value = Mock(
@@ -1522,17 +1511,15 @@ def test_full_schema_lifecycle(sample_schema: dict[str, Any]) -> None:
         )
 
         with RegistryClient("http://localhost:8000") as client:
-            # Register
             result = client.register_schema(
                 "User", "1.0.0", sample_schema, "test-service"
             )
             assert result["model_name"] == "User"
 
-            # Get
-            schema = client.get_schema("User", "1.0.0")
-            assert schema["json_schema"] == sample_schema
+            response = client.get_schema("User", "1.0.0")
+            assert response["json_schema"] == sample_schema
+            assert response["version"] == "1.0.0"
 
-            # Deprecate
             mock_post.return_value.json = lambda: {
                 "id": 1,
                 "deprecated": True,
@@ -1543,3 +1530,341 @@ def test_full_schema_lifecycle(sample_schema: dict[str, Any]) -> None:
             # Delete
             deleted = client.delete_schema("User", "1.0.0", force=True)
             assert deleted["deleted"] is True
+
+
+# ============================================================================
+# AVRO SUPPORT
+# ============================================================================
+
+
+def test_register_schema_with_avro(
+    sample_schema: JsonSchema,
+    sample_avro_schema: AvroRecordSchema,
+) -> None:
+    """Test registering a schema with Avro."""
+    with patch("httpx.Client.post") as mock_post:
+        mock_post.return_value = Mock(
+            status_code=codes.CREATED,
+            json=lambda: {
+                "id": 1,
+                "namespace": None,
+                "model_name": "User",
+                "version": "1.0.0",
+                "json_schema": sample_schema,
+                "avro_schema": sample_avro_schema,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.register_schema(
+            "User",
+            "1.0.0",
+            sample_schema,
+            "test-service",
+            avro_schema=sample_avro_schema,
+        )
+
+        assert result["model_name"] == "User"
+        assert "avro_schema" in result
+
+        # Verify payload includes avro_schema
+        call_args = mock_post.call_args
+        payload = call_args.kwargs["json"]
+        assert "avro_schema" in payload
+        assert payload["avro_schema"] == sample_avro_schema
+
+
+def test_register_schema_without_avro(sample_schema: dict[str, Any]) -> None:
+    """Test registering schema without Avro (backward compatible)."""
+    with patch("httpx.Client.post") as mock_post:
+        mock_post.return_value = Mock(
+            status_code=codes.CREATED,
+            json=lambda: {
+                "id": 1,
+                "model_name": "User",
+                "version": "1.0.0",
+                "json_schema": sample_schema,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.register_schema(
+            "User",
+            "1.0.0",
+            sample_schema,
+            "test-service",
+            # No avro_schema parameter
+        )
+
+        assert result["model_name"] == "User"
+
+        # Verify payload does NOT include avro_schema
+        call_args = mock_post.call_args
+        payload = call_args.kwargs["json"]
+        assert "avro_schema" not in payload
+
+
+def test_get_schema_with_avro(
+    sample_schema: JsonSchema,
+    sample_avro_schema: AvroRecordSchema,
+) -> None:
+    """Test getting a schema that includes Avro."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "id": 1,
+                "namespace": None,
+                "model_name": "User",
+                "version": "1.0.0",
+                "json_schema": sample_schema,
+                "avro_schema": sample_avro_schema,
+                "registered_at": "2024-01-01T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {},
+                "deprecated": False,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        response = client.get_schema("User", "1.0.0")
+
+        # Check both schemas are present
+        assert "json_schema" in response
+        assert "avro_schema" in response
+        assert response["json_schema"] == sample_schema
+        assert response["avro_schema"] == sample_avro_schema
+
+
+def test_get_schema_without_avro(sample_schema: dict[str, Any]) -> None:
+    """Test getting a schema that doesn't have Avro (optional field)."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "id": 1,
+                "namespace": None,
+                "model_name": "User",
+                "version": "1.0.0",
+                "json_schema": sample_schema,
+                # No avro_schema field
+                "registered_at": "2024-01-01T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {},
+                "deprecated": False,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        response = client.get_schema("User", "1.0.0")
+
+        assert "json_schema" in response
+        assert response.get("avro_schema") is None
+
+
+def test_get_latest_schema_with_avro(
+    sample_schema: JsonSchema,
+    sample_avro_schema: AvroRecordSchema,
+) -> None:
+    """Test getting latest schema with Avro."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "id": 1,
+                "model_name": "User",
+                "version": "2.0.0",
+                "json_schema": sample_schema,
+                "avro_schema": sample_avro_schema,
+                "registered_at": "2024-01-01T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {},
+                "deprecated": False,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        response = client.get_latest_schema("User")
+
+        assert response["version"] == "2.0.0"
+        assert "avro_schema" in response
+
+
+def test_register_namespaced_schema_with_avro(
+    sample_schema: JsonSchema,
+    sample_avro_schema: AvroRecordSchema,
+) -> None:
+    """Test registering a namespaced schema with Avro."""
+    with patch("httpx.Client.post") as mock_post:
+        mock_post.return_value = Mock(
+            status_code=codes.CREATED,
+            json=lambda: {
+                "id": 1,
+                "namespace": "auth-service",
+                "model_name": "User",
+                "version": "1.0.0",
+                "json_schema": sample_schema,
+                "avro_schema": sample_avro_schema,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        result = client.register_schema(
+            "User",
+            "1.0.0",
+            sample_schema,
+            "test-service",
+            namespace="auth-service",
+            avro_schema=sample_avro_schema,
+        )
+
+        assert result["namespace"] == "auth-service"
+        assert "avro_schema" in result
+
+        call_args = mock_post.call_args
+        assert (
+            call_args[0][0]
+            == "http://localhost:8000/schemas/auth-service/User/versions"
+        )
+
+
+def test_payload_includes_avro_schema(
+    sample_schema: JsonSchema,
+    sample_avro_schema: AvroRecordSchema,
+) -> None:
+    """Test that registration payload includes avro_schema when provided."""
+    with patch("httpx.Client.post") as mock_post:
+        mock_post.return_value = Mock(
+            status_code=codes.CREATED,
+            json=lambda: {"id": 1},
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        client.register_schema(
+            "User",
+            "1.0.0",
+            sample_schema,
+            "test-service",
+            avro_schema=sample_avro_schema,
+        )
+
+        # Verify payload structure
+        call_args = mock_post.call_args
+        payload = call_args.kwargs["json"]
+
+        assert "version" in payload
+        assert "json_schema" in payload
+        assert "avro_schema" in payload
+        assert "registered_at" in payload
+        assert "registered_by" in payload
+        assert "meta" in payload
+
+        assert payload["avro_schema"] == sample_avro_schema
+
+
+def test_response_structure_with_avro(
+    sample_schema: JsonSchema,
+    sample_avro_schema: AvroRecordSchema,
+) -> None:
+    """Test that response has correct structure with Avro."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "id": 1,
+                "namespace": None,
+                "model_name": "User",
+                "version": "1.0.0",
+                "json_schema": sample_schema,
+                "avro_schema": sample_avro_schema,
+                "registered_at": "2024-01-01T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {"team": "platform"},
+                "deprecated": False,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        response = client.get_schema("User", "1.0.0")
+
+        # Check all expected fields
+        assert response["id"] == 1
+        assert response["namespace"] is None
+        assert response["model_name"] == "User"
+        assert response["version"] == "1.0.0"
+        assert response["json_schema"] == sample_schema
+        assert response["avro_schema"] == sample_avro_schema
+        assert response["registered_at"] == "2024-01-01T00:00:00Z"
+        assert response["registered_by"] == "test-service"
+        assert response["meta"] == {"team": "platform"}
+        assert response["deprecated"] is False
+
+
+def test_health_check_detailed_unhealthy() -> None:
+    """Test detailed health check with unhealthy status."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "status": "unhealthy",
+                "version": "1.0.0",
+                "error": "Database connection failed",
+            },
+        )
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=True)
+
+        assert isinstance(result, dict)
+        # Should set healthy=False based on status != "healthy"
+        assert result["healthy"] is False
+        assert result["status"] == "unhealthy"
+
+
+def test_health_check_detailed_non_ok_status() -> None:
+    """Test detailed health check with non-200 status code."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.SERVICE_UNAVAILABLE,
+            text="Service unavailable",
+        )
+        client = RegistryClient("http://localhost:8000")
+        result = client.health_check(detailed=True)
+
+        assert isinstance(result, dict)
+        assert result["healthy"] is False
+        assert result["status"] == "unhealthy"
+        assert result["status_code"] == 503
+
+
+# ============================================================================
+# TYPE CHECKING TESTS
+# ============================================================================
+
+
+def test_response_type_hints() -> None:
+    """Test that response follows RegistrySchemaResponse structure."""
+    with patch("httpx.Client.get") as mock_get:
+        mock_get.return_value = Mock(
+            status_code=codes.OK,
+            json=lambda: {
+                "id": 1,
+                "namespace": None,
+                "model_name": "User",
+                "version": "1.0.0",
+                "json_schema": {"type": "object"},
+                "registered_at": "2024-01-01T00:00:00Z",
+                "registered_by": "test-service",
+                "meta": {},
+                "deprecated": False,
+            },
+        )
+
+        client = RegistryClient("http://localhost:8000")
+        response: RegistrySchemaResponse = client.get_schema("User", "1.0.0")
+
+        # TypedDict ensures these fields exist
+        assert isinstance(response["id"], int)
+        assert isinstance(response["model_name"], str)
+        assert isinstance(response["version"], str)
+        assert isinstance(response["json_schema"], dict)
+        assert isinstance(response["deprecated"], bool)

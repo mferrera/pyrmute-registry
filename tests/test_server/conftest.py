@@ -29,6 +29,7 @@ from pyrmute_registry.server.config import Settings, get_settings
 from pyrmute_registry.server.db import Base, get_db
 from pyrmute_registry.server.main import create_app
 from pyrmute_registry.server.models.api_key import ApiKey, Permission
+from pyrmute_registry.server.schemas.schema import SchemaCreate
 
 
 def is_postgresql(url: str) -> bool:
@@ -368,6 +369,21 @@ def sample_schema_v2() -> dict[str, Any]:
         },
         "required": ["id", "name", "email"],
     }
+
+
+@pytest.fixture
+def sample_schema_data_with_avro(
+    sample_schema: dict[str, Any],
+    sample_avro_schema: dict[str, Any],
+) -> SchemaCreate:
+    """Create sample SchemaCreate data with Avro."""
+    return SchemaCreate(
+        version="1.0.0",
+        json_schema=sample_schema,
+        avro_schema=sample_avro_schema,
+        registered_by="test-service",
+        meta={"description": "Test schema with Avro"},
+    )
 
 
 @pytest.fixture

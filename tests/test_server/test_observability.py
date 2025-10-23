@@ -96,6 +96,7 @@ def test_setup_sentry_initializes_correctly() -> None:
         assert call_kwargs["traces_sample_rate"] == 0.5
 
 
+@pytest.mark.filterwarnings("ignore:Remove `format_exc_info`")
 def test_setup_sentry_handles_errors() -> None:
     """Test that Sentry initialization errors are handled gracefully."""
     settings = Settings(sentry_dsn="https://test@sentry.io/123")

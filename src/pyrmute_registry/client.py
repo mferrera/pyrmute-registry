@@ -7,6 +7,7 @@ from typing import Any, Self
 
 import httpx
 from httpx import codes
+from pyrmute.avro_types import AvroRecordSchema
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -21,7 +22,7 @@ from .exceptions import (
     SchemaConflictError,
     SchemaNotFoundError,
 )
-from .types import JsonSchema
+from .types import JsonSchema, RegistrySchemaResponse
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +37,22 @@ class RegistryClient:
     - Connection pooling
     - Request/response logging
     - Namespace support for multi-tenant deployments
+    - Optional Avro schema support
 
     Example:
         ```python
         # Context manager (recommended)
         with RegistryClient("http://registry:8000") as client:
-            # Register global schema
+            # Register global schema with JSON Schema only
             client.register_schema("User", "1.0.0", schema, "api-service")
+
+            # Register with both JSON Schema and Avro
+            client.register_schema(
+                "User", "1.0.0",
+                json_schema=schema,
+                avro_schema=avro_schema,
+                registered_by="api-service"
+            )
 
             # Register namespaced schema
             client.register_schema(
@@ -105,6 +115,7 @@ class RegistryClient:
         schema: JsonSchema,
         registered_by: str,
         namespace: str | None = None,
+        avro_schema: AvroRecordSchema | None = None,
         metadata: dict[str, Any] | None = None,
         allow_overwrite: bool = False,
     ) -> dict[str, Any]:
@@ -116,6 +127,7 @@ class RegistryClient:
             schema: JSON Schema definition.
             registered_by: Service or user registering this schema.
             namespace: Optional namespace for scoping (None for global schemas).
+            avro_schema: Optional Avro schema definition.
             metadata: Additional metadata (tags, environment, etc.).
             allow_overwrite: Whether to overwrite existing schema.
 
@@ -129,15 +141,24 @@ class RegistryClient:
 
         Example:
             ```python
-            # Register global schema
+            # Register global schema (JSON Schema only)
             client.register_schema(
                 "User", "1.0.0", user_schema, "api-service"
+            )
+
+            # Register with both JSON Schema and Avro
+            client.register_schema(
+                "User", "1.0.0",
+                schema=json_schema,
+                avro_schema=avro_schema,
+                registered_by="api-service"
             )
 
             # Register namespaced schema
             client.register_schema(
                 "User", "1.0.0", user_schema, "api-service",
                 namespace="auth-service",
+                avro_schema=avro_schema,
                 metadata={"environment": "production"}
             )
             ```
@@ -149,6 +170,7 @@ class RegistryClient:
                 schema,
                 registered_by,
                 namespace,
+                avro_schema,
                 metadata,
                 allow_overwrite,
             )
@@ -176,6 +198,7 @@ class RegistryClient:
         schema: JsonSchema,
         registered_by: str,
         namespace: str | None = None,
+        avro_schema: AvroRecordSchema | None = None,
         metadata: dict[str, Any] | None = None,
         allow_overwrite: bool = False,
     ) -> dict[str, Any]:
@@ -190,6 +213,10 @@ class RegistryClient:
             "meta": metadata or {},
         }
 
+        # Add Avro schema if provided
+        if avro_schema is not None:
+            payload["avro_schema"] = avro_schema
+
         # Build URL based on whether namespace is provided
         if namespace:
             url = f"{self.base_url}/schemas/{namespace}/{model_name}/versions"
@@ -200,7 +227,12 @@ class RegistryClient:
             url += "?allow_overwrite=true"
 
         identifier = f"{namespace}::{model_name}" if namespace else model_name
-        logger.info(f"Registering schema {identifier} v{version} by {registered_by}")
+        schema_types = "JSON Schema"
+        if avro_schema:
+            schema_types += " + Avro"
+        logger.info(
+            f"Registering {schema_types} for {identifier} v{version} by {registered_by}"
+        )
 
         try:
             response = self.client.post(url, json=payload)
@@ -237,29 +269,32 @@ class RegistryClient:
         model_name: str,
         version: str,
         namespace: str | None = None,
-    ) -> JsonSchema:
+    ) -> RegistrySchemaResponse:
         """Retrieve a specific schema version.
 
         Args:
             model_name: Name of the model.
-            version: Semantic version string.
+            version: Version string (e.g., '1.0.0').
             namespace: Optional namespace for scoping.
 
         Returns:
-            Schema data including the JSON Schema and metadata.
+            Full schema response including json_schema, optional avro_schema, and
+            metadata.
 
         Raises:
             SchemaNotFoundError: If schema not found.
-            RegistryConnectionError: If unable to connect to registry.
-            RegistryError: For other retrieval errors.
+            RegistryConnectionError: If unable to connect.
 
         Example:
             ```python
-            # Get global schema
-            schema = client.get_schema("User", "1.0.0")
+            # Get full response
+            response = client.get_schema("User", "1.0.0")
+            json_schema = response["json_schema"]
+            avro_schema = response.get("avro_schema")  # May be None
+            registered_by = response["registered_by"]
 
             # Get namespaced schema
-            schema = client.get_schema("User", "1.0.0", namespace="auth-service")
+            response = client.get_schema("User", "1.0.0", namespace="auth-service")
             ```
         """
         self._ensure_open()
@@ -275,14 +310,9 @@ class RegistryClient:
         try:
             response = self.client.get(url)
             response.raise_for_status()
-            result: JsonSchema = response.json()
-            logger.info(f"Successfully found schema {identifier} v{version}")
+            result: RegistrySchemaResponse = response.json()
+            logger.info(f"Successfully fetched {identifier} v{version}")
             return result
-
-        except httpx.ConnectError as e:
-            raise RegistryConnectionError(
-                f"Unable to connect to registry at {self.base_url}"
-            ) from e
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == codes.NOT_FOUND:
@@ -290,7 +320,12 @@ class RegistryClient:
                     f"Schema {identifier} v{version} not found"
                 ) from e
             raise RegistryError(
-                f"Failed to retrieve schema: {e.response.status_code}"
+                f"Failed to fetch schema: {e.response.status_code}"
+            ) from e
+
+        except httpx.ConnectError as e:
+            raise RegistryConnectionError(
+                f"Unable to connect to registry at {self.base_url}"
             ) from e
 
     @retry(
@@ -303,7 +338,7 @@ class RegistryClient:
         self: Self,
         model_name: str,
         namespace: str | None = None,
-    ) -> JsonSchema:
+    ) -> RegistrySchemaResponse:
         """Retrieve the latest version of a schema.
 
         Args:
@@ -311,19 +346,20 @@ class RegistryClient:
             namespace: Optional namespace for scoping.
 
         Returns:
-            Latest schema data.
+            Latest schema response including json_schema, optional avro_schema, and
+            metadata.
 
         Raises:
-            SchemaNotFoundError: If model not found.
-            RegistryConnectionError: If unable to connect to registry.
+            SchemaNotFoundError: If schema not found.
+            RegistryConnectionError: If unable to connect.
 
         Example:
             ```python
-            # Get latest global schema
-            schema = client.get_latest_schema("User")
-
-            # Get latest namespaced schema
-            schema = client.get_latest_schema("User", namespace="auth-service")
+            # Get latest schema
+            response = client.get_latest_schema("User")
+            json_schema = response["json_schema"]
+            avro_schema = response.get("avro_schema")
+            version = response["version"]
             ```
         """
         self._ensure_open()
@@ -339,20 +375,82 @@ class RegistryClient:
         try:
             response = self.client.get(url)
             response.raise_for_status()
-            result: JsonSchema = response.json()
-            logger.info(f"Successfully found latest schema for {identifier}")
+            result: RegistrySchemaResponse = response.json()
+            logger.info(f"Successfully fetched latest {identifier}")
             return result
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == codes.NOT_FOUND:
+                raise SchemaNotFoundError(f"No schemas found for {identifier}") from e
+            raise RegistryError(
+                f"Failed to fetch schema: {e.response.status_code}"
+            ) from e
 
         except httpx.ConnectError as e:
             raise RegistryConnectionError(
                 f"Unable to connect to registry at {self.base_url}"
             ) from e
 
+    @retry(
+        retry=retry_if_exception_type((httpx.ConnectError, httpx.TimeoutException)),
+        stop=stop_after_attempt(DEFAULT_MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
+    def list_versions(
+        self: Self,
+        model_name: str,
+        namespace: str | None = None,
+    ) -> list[str]:
+        """List all available versions for a model.
+
+        Args:
+            model_name: Name of the model.
+            namespace: Optional namespace for scoping.
+
+        Returns:
+            Dictionary with 'versions' key containing list of version strings.
+
+        Raises:
+            SchemaNotFoundError: If model not found.
+            RegistryConnectionError: If unable to connect.
+
+        Example:
+            ```python
+            versions = client.list_versions("User")
+            print(versions)  # ["1.0.0", "1.1.0", "2.0.0"]
+            ```
+        """
+        self._ensure_open()
+
+        if namespace:
+            url = f"{self.base_url}/schemas/{namespace}/{model_name}/versions"
+        else:
+            url = f"{self.base_url}/schemas/{model_name}/versions"
+
+        identifier = f"{namespace}::{model_name}" if namespace else model_name
+        logger.debug(f"Listing versions for {identifier}")
+
+        try:
+            response = self.client.get(url)
+            response.raise_for_status()
+            result: dict[str, list[str]] = response.json()
+            logger.info(
+                f"Found {len(result.get('versions', []))} versions for {identifier}"
+            )
+            versions: list[str] = result["versions"]
+            return versions
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == codes.NOT_FOUND:
-                raise SchemaNotFoundError(f"Model {identifier} not found") from e
+                raise SchemaNotFoundError(f"No versions found for {identifier}") from e
             raise RegistryError(
-                f"Failed to retrieve latest schema: {e.response.status_code}"
+                f"Failed to list versions: {e.response.status_code}"
+            ) from e
+
+        except httpx.ConnectError as e:
+            raise RegistryConnectionError(
+                f"Unable to connect to registry at {self.base_url}"
             ) from e
 
     @retry(
@@ -369,132 +467,68 @@ class RegistryClient:
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """List all registered schemas with optional filtering.
+        """List all schemas with optional filtering.
 
         Args:
-            namespace: Optional filter by namespace.
-                - None (default): List schemas from all namespaces.
-                - "" or "null": Filter for global schemas only.
-                - "service-name": Filter for specific namespace.
-            model_name: Optional filter by model name.
-            include_deprecated: Whether to include deprecated schemas.
+            namespace: Filter by namespace (None for all, 'null' for global only).
+            model_name: Filter by model name.
+            include_deprecated: Include deprecated schemas.
             limit: Maximum number of results (1-1000).
-            offset: Number of results to skip for pagination.
+            offset: Number of results to skip.
 
         Returns:
-            Dict containing list of schemas with pagination info.
+            Dictionary with 'schemas', 'total', 'limit', and 'offset'.
+
+        Raises:
+            RegistryConnectionError: If unable to connect.
 
         Example:
             ```python
             # List all schemas
             result = client.list_schemas()
 
-            # List schemas in specific namespace
+            # List schemas for specific namespace
             result = client.list_schemas(namespace="auth-service")
 
-            # List specific model across namespaces
-            result = client.list_schemas(model_name="User")
-
-            # Paginated results
-            result = client.list_schemas(limit=50, offset=100)
+            # List global schemas only
+            result = client.list_schemas(namespace="null")
             ```
         """
         self._ensure_open()
 
+        url = f"{self.base_url}/schemas"
         params: dict[str, Any] = {
-            "include_deprecated": include_deprecated,
             "limit": limit,
             "offset": offset,
+            "include_deprecated": include_deprecated,
         }
+
         if namespace is not None:
             params["namespace"] = namespace
         if model_name is not None:
             params["model_name"] = model_name
 
-        url = f"{self.base_url}/schemas"
         logger.debug(f"Listing schemas with params: {params}")
 
         try:
             response = self.client.get(url, params=params)
             response.raise_for_status()
             result: dict[str, Any] = response.json()
-            logger.info("Successfully listed schemas")
+            logger.info(f"Found {result.get('total', 0)} schemas")
             return result
-
-        except httpx.ConnectError as e:
-            raise RegistryConnectionError(
-                f"Unable to connect to registry at {self.base_url}"
-            ) from e
 
         except httpx.HTTPStatusError as e:
             raise RegistryError(
                 f"Failed to list schemas: {e.response.status_code}"
             ) from e
 
-    @retry(
-        retry=retry_if_exception_type((httpx.ConnectError, httpx.TimeoutException)),
-        stop=stop_after_attempt(DEFAULT_MAX_RETRIES),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
-    def list_versions(
-        self: Self,
-        model_name: str,
-        namespace: str | None = None,
-    ) -> list[str]:
-        """List all versions for a specific model.
-
-        Args:
-            model_name: Name of the model.
-            namespace: Optional namespace for scoping.
-
-        Returns:
-            List of version strings sorted by semantic versioning.
-
-        Raises:
-            SchemaNotFoundError: If model not found.
-
-        Example:
-            ```python
-            # List versions for global model
-            versions = client.list_versions("User")
-
-            # List versions for namespaced model
-            versions = client.list_versions("User", namespace="auth-service")
-            ```
-        """
-        self._ensure_open()
-
-        if namespace:
-            url = f"{self.base_url}/schemas/{namespace}/{model_name}/versions"
-        else:
-            url = f"{self.base_url}/schemas/{model_name}/versions"
-
-        identifier = f"{namespace}::{model_name}" if namespace else model_name
-        logger.debug(f"Listing versions for {identifier}")
-
-        try:
-            response = self.client.get(url)
-            response.raise_for_status()
-            result: dict[str, Any] = response.json()
-            logger.info(f"Successfully got list of versions for {identifier}")
-            versions: list[str] = result["versions"]
-            return versions
-
         except httpx.ConnectError as e:
             raise RegistryConnectionError(
                 f"Unable to connect to registry at {self.base_url}"
             ) from e
 
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == codes.NOT_FOUND:
-                raise SchemaNotFoundError(f"Model {identifier} not found") from e
-            raise RegistryError(
-                f"Failed to list versions: {e.response.status_code}"
-            ) from e
-
     def health_check(self: Self, detailed: bool = False) -> bool | dict[str, Any]:
-        """Check if the registry server is available.
+        """Check registry health status.
 
         Args:
             detailed: If True, return detailed health information.
